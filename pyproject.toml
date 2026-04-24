@@ -16,17 +16,17 @@ dependencies = [
 
 [project.optional-dependencies]
 transcribe = [
-    "faster-whisper",
-    "whisperx",
-    "pyannote.audio",
+    "huggingface-hub",
     "nemo_toolkit[asr]",
+    "numpy",
+    "pandas",
+    "pyannote.audio",
     "torch",
     "torchaudio",
-    "numpy",
-    "soundfile",
+    "whisperx",
 ]
-summarize = [
-    "openai",
+summarize-local = [
+    "llama-cpp-python",
 ]
 
 [project.scripts]

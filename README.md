@@ -28,11 +28,13 @@ widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
 # Core (pure Python)
 pip install -e .
 
-# With transcription deps (torch, faster-whisper, pyannote.audio, pandas, numpy)
+# With transcription and speaker-enrollment deps
 pip install -e ".[transcribe]"
 
-# With summarization deps (openai; or install llama-cpp-python separately for local)
-pip install -e ".[summarize]"
+# Remote summarization through codex/claude/gemini uses CLI tools, no Python extra.
+
+# With local llama.cpp summarization deps
+pip install -e ".[summarize-local]"
 ```
 
 System dependencies (not pip-installable):
@@ -92,7 +94,6 @@ After `pip install -e .`:
 | `hugin-meet-summarize [transcript]` | Summarize a transcript |
 | `hugin-meet-match-calendar [transcript]` | Attach calendar metadata |
 | `hugin-meet-enroll` | Interactively enroll a new speaker |
-| `hugin-meet-compare-diarization` | Benchmark diarization pipelines |
 | `hugin-meet-tui` | Interactive curses TUI — drives the whole pipeline |
 
 Calendar matching searches calendars you own by default, which keeps shared or
@@ -127,7 +128,6 @@ src/hugin_meetings/
   summarize.py            LLM summarization
   enroll.py               Speaker enrollment
   calendar_match.py       Google Calendar matching
-  diarization_compare.py  Diarization benchmark
   tui.py                  Interactive TUI
   prompts/                Summary and matcher prompt templates
 
