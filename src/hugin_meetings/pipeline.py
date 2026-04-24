@@ -25,6 +25,7 @@ SUMMARY_DIR = _cfg.summaries_dir
 # State / cache directories
 RAW_AUDIO_DIR = _cfg.raw_audio_dir
 STATE_AUDIO_DIR = _cfg.state_dir
+WAV_CACHE_DIR = _cfg.wav_cache_dir
 TRANSCRIPT_JSON_DIR = _cfg.transcript_json_dir
 
 # Project/customer matching. Projects dir may be None if not configured.
@@ -323,6 +324,47 @@ def raw_audio_session(session_id: str) -> RawAudioSession | None:
 def _raw_part_sort_key(path: Path) -> int:
     part = parse_raw_audio_part(path)
     return part.part if part else 0
+
+
+def meeting_artifact_paths(rec: MeetingStatus) -> list[Path]:
+    """Return timestamp-scoped files that make up a meeting entry."""
+    paths: list[Path] = []
+
+    def add(path: Path | None) -> None:
+        if path is not None and path not in paths:
+            paths.append(path)
+
+    for path in (*rec.mic_parts, *rec.sys_parts):
+        add(path)
+        add(WAV_CACHE_DIR / f"{path.stem}.wav")
+
+    for prefix in ("mic", "sys"):
+        for path in sorted(RAW_AUDIO_DIR.glob(f"{prefix}-{rec.timestamp}*.opus")):
+            add(path)
+            add(WAV_CACHE_DIR / f"{path.stem}.wav")
+        for path in sorted(WAV_CACHE_DIR.glob(f"{prefix}-{rec.timestamp}*.wav")):
+            add(path)
+
+    add(rec.transcript_json)
+    add(transcript_json_path(rec.timestamp))
+    add(customer_state_path(rec.timestamp))
+    add(rec.transcript_md)
+    add(TRANSCRIPT_DIR / f"transcript-{rec.timestamp}.md")
+    add(rec.summary_md)
+    add(SUMMARY_DIR / f"summary-{rec.timestamp}.md")
+
+    return [path for path in paths if path.exists()]
+
+
+def delete_meeting_entry(rec: MeetingStatus) -> list[Path]:
+    """Delete a meeting entry without touching project/customer notes."""
+    deleted: list[Path] = []
+    for path in meeting_artifact_paths(rec):
+        if path.is_dir() and not path.is_symlink():
+            raise RuntimeError(f"Refusing to delete directory: {path}")
+        path.unlink(missing_ok=True)
+        deleted.append(path)
+    return deleted
 
 
 def extract_metadata_block(text: str, start: str, end: str) -> str | None:

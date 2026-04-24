@@ -102,6 +102,11 @@ class AudioTui:
                 if rec:
                     self.remove_customer(stdscr, rec)
                     self.refresh()
+            elif key in (ord("d"), ord("D")):
+                rec = self.selected_recording()
+                if rec:
+                    self.delete_entry_flow(stdscr, rec)
+                    self.refresh()
             elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
                 if self.recordings:
                     self.open_recording(stdscr, self.recordings[self.selected])
@@ -118,7 +123,7 @@ class AudioTui:
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
-        info = "Enter: open  p: process pending  v: verify customer  l: manage customer  x: remove customer  r: refresh  q: quit"
+        info = "Enter: open  p: process pending  v: verify customer  l: manage customer  x: remove customer  d: delete entry  r: refresh  q: quit"
         stdscr.addstr(1, 0, info[: w - 1], curses.A_DIM)
 
         table_top = 3
@@ -328,6 +333,10 @@ class AudioTui:
             elif key in (ord("x"), ord("X")):
                 self.remove_customer(stdscr, rec)
                 self.refresh()
+            elif key in (ord("d"), ord("D")):
+                if self.delete_entry_flow(stdscr, rec):
+                    self.refresh()
+                    return
 
     def draw_recording(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
         stdscr.erase()
@@ -374,7 +383,7 @@ class AudioTui:
         elif rec.transcript_md and rec.transcript_md.exists():
             excerpt = rec.title
 
-        stdscr.addstr(7, 0, "e: enroll  l: manage customer  v: verify customer  x: remove customer  g: run pending pipeline  b: back", curses.A_DIM)
+        stdscr.addstr(7, 0, "e: enroll  l: manage customer  v: verify customer  x: remove customer  d: delete entry  g: run pending pipeline  b: back", curses.A_DIM)
         stdscr.addstr(9, 0, "Summary excerpt", curses.color_pair(5) | curses.A_BOLD)
         for idx, line in enumerate(textwrap.wrap(excerpt, width=max(20, w - 2))[: max(1, h - 12)], start=10):
             if idx >= h - 1:
@@ -535,6 +544,49 @@ class AudioTui:
         audio_pipeline.remove_customer_link(rec.summary_md)
         self.append_log(f"Removed customer state for {rec.timestamp}")
         self.set_message("Removed cached/verified customer link.")
+
+    def delete_entry_flow(self, stdscr, rec: audio_pipeline.MeetingStatus) -> bool:
+        paths = audio_pipeline.meeting_artifact_paths(rec)
+        if not paths:
+            self.set_message("No files found for this entry.")
+            return False
+
+        self.draw_delete_confirmation(stdscr, rec, paths)
+        confirmation = self.prompt_text(stdscr, "Type DELETE to delete this entry: ")
+        if confirmation != "DELETE":
+            self.set_message("Delete cancelled.")
+            return False
+
+        try:
+            deleted = audio_pipeline.delete_meeting_entry(rec)
+        except Exception as exc:
+            self.append_log(f"ERROR deleting {rec.timestamp}: {exc}")
+            self.set_message(f"Delete failed: {exc}")
+            return False
+
+        self.append_log(f"Deleted entry {rec.timestamp}: {len(deleted)} file(s)")
+        self.set_message(f"Deleted {rec.timestamp} ({len(deleted)} file(s)). Customer notes were left unchanged.")
+        return True
+
+    def draw_delete_confirmation(
+        self,
+        stdscr,
+        rec: audio_pipeline.MeetingStatus,
+        paths: list[Path],
+    ) -> None:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        stdscr.addstr(0, 0, f"Delete meeting {rec.timestamp}", curses.color_pair(4) | curses.A_BOLD)
+        stdscr.addstr(1, 0, "This removes raw audio, transcripts, summaries, cached WAVs, and customer-state JSON."[: w - 1])
+        stdscr.addstr(2, 0, "Project/customer notes are left unchanged."[: w - 1])
+        stdscr.addstr(4, 0, "Files to delete", curses.color_pair(5) | curses.A_BOLD)
+        for offset, path in enumerate(paths[: max(1, h - 8)], start=5):
+            if offset >= h - 2:
+                break
+            stdscr.addstr(offset, 0, str(path)[: w - 1])
+        if len(paths) > max(1, h - 8):
+            stdscr.addstr(h - 2, 0, f"... and {len(paths) - max(1, h - 8)} more"[: w - 1])
+        stdscr.refresh()
 
     def prompt_text(self, stdscr, prompt: str, default: str = "") -> str | None:
         h, w = stdscr.getmaxyx()
