@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hugin-meetings-gnome"
+version = "0.1.0"
+description = "GNOME tray indicator for Hugin Meetings (start/stop recording, open TUI, see next meeting)."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "David Fendrich" }]
+dependencies = [
+    "hugin-meetings",
+    # System-level Gtk deps (PyGObject, AyatanaAppIndicator3) must be
+    # installed via apt: python3-gi, gir1.2-ayatanaappindicator3-0.1
+]
+
+[project.scripts]
+hugin-meet-recorder = "hugin_meetings_gnome.recorder:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

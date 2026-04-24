@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Hugin Recorder
+Comment=Toggle mic recording from the panel
+Exec=hugin-meet-recorder-launcher
+Icon=audio-input-microphone
+Type=Application
+Categories=AudioVideo;Utility;
+StartupNotify=false

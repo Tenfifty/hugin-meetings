@@ -1,0 +1,44 @@
+# ~/.config/hugin/hugin.yaml  (shared across all hugin-* tools)
+# ----------------------------------------------------------------
+# Any field here may also live in meetings.yaml — meetings.yaml wins.
+
+language: sv                       # primary language for prompts/summaries
+user_name: "Your Name"
+vault_path: ~/Documents/notes      # your knowledge base / Obsidian vault
+
+
+# ~/.config/hugin/meetings.yaml  (meetings-specific)
+# ----------------------------------------------------------------
+meetings:
+  # Where transcripts and summaries are written (usually inside your vault)
+  transcripts_dir: ~/Documents/notes/meetings/transcripts
+  summaries_dir:   ~/Documents/notes/meetings/summaries
+
+  # Cache / state (raw audio, models, speaker embeddings). Safe to wipe.
+  state_dir: ~/.hugin_audio
+
+  # Whisper
+  whisper_model: large-v3
+  compute_type:  float16
+
+  # Google Workspace CLI used to fetch calendar events.
+  # gws_bin: gws                    # binary on PATH
+  # gws_config_dir: ~/.config/gws   # optional override
+
+  # Project / customer matching. Points at a directory of markdown notes
+  # (one per project/customer). Leave unset to disable matching.
+  project_matcher:
+    projects_dir: ~/Documents/notes/projects
+    # Note representing your own organization — gets priority in matching.
+    # For the author this was "Tenfifty".
+    internal_project: ""
+    model: gpt-5.4-mini
+
+  # Stopwords used by fuzzy token matching. Tune to your language(s).
+  stopwords:
+    - the
+    - and
+    - for
+    - with
+    # - och  # Swedish
+    # - att

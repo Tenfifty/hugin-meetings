@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hugin-meetings"
+version = "0.1.0"
+description = "Record, transcribe, diarize, and summarize meetings. Part of the Hugin personal productivity stack."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "David Fendrich" }]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+transcribe = [
+    "faster-whisper",
+    "pyannote.audio",
+    "torch",
+    "torchaudio",
+    "numpy",
+    "soundfile",
+]
+summarize = [
+    "openai",
+]
+
+[project.scripts]
+hugin-meet-transcribe = "hugin_meetings.transcribe:main"
+hugin-meet-summarize = "hugin_meetings.summarize:main"
+hugin-meet-enroll = "hugin_meetings.enroll:main"
+hugin-meet-match-calendar = "hugin_meetings.calendar_match:main"
+hugin-meet-compare-diarization = "hugin_meetings.diarization_compare:main"
+hugin-meet-tui = "hugin_meetings.tui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
