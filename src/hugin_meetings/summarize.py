@@ -31,8 +31,7 @@ _DEFAULT_PROMPT_PATH = Path(__file__).parent / "prompts" / "summary_default.md"
 
 
 def _load_prompt() -> str:
-    override = _cfg.raw.get("meetings", {}).get("summarize_prompt_path")
-    path = Path(override).expanduser() if override else _DEFAULT_PROMPT_PATH
+    path = _cfg.summarize_prompt_path or _DEFAULT_PROMPT_PATH
     return path.read_text(encoding="utf-8")
 
 
@@ -71,6 +70,7 @@ def clean_summary_text(text: str) -> str:
     text = re.sub(r"^[-*_\w]*thought[-*_\w]*\n+", "", text)
 
     for marker in (
+        _cfg.summary_header,
         "## Mötessammanfattning",
         "Här är en sammanfattning av mötet:",
         "**Sammanfattning",

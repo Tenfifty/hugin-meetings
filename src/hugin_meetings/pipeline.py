@@ -73,9 +73,12 @@ CustomerStatus = Literal["linked", "suggested_new", "no_match"]
 Confidence = Literal["high", "medium", "low"]
 
 DEFAULT_CUSTOMER_MODEL = _cfg.project_matcher.model
+CUSTOMER_JSON_SYSTEM_PROMPT = _cfg.project_matcher.json_system_prompt
+INACTIVE_DIR_NAMES = set(_cfg.project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
 MAX_MEETING_TEXT = 12000
 MAX_CANDIDATES = 10
+DEFAULT_CUSTOMER_PROMPT_PATH = Path(__file__).parent / "prompts" / "project_matcher_default.md"
 
 
 @dataclass
@@ -555,7 +558,7 @@ def list_customer_notes() -> list[CustomerNote]:
     notes: list[CustomerNote] = []
     for path in sorted(CUSTOMERS_DIR.rglob("*.md")):
         name = path.stem
-        is_active = "inaktiva" not in path.parts
+        is_active = not any(part in INACTIVE_DIR_NAMES for part in path.parts)
         text = path.read_text()
         preview = re.sub(r"\s+", " ", text).strip()[:MAX_CANDIDATE_PREVIEW]
         notes.append(
@@ -679,6 +682,17 @@ def select_customer_candidates(meeting_text: str, notes: list[CustomerNote]) -> 
     return picked[:MAX_CANDIDATES]
 
 
+def _load_customer_prompt_template() -> str:
+    path = _cfg.project_matcher.prompt_path or DEFAULT_CUSTOMER_PROMPT_PATH
+    return path.read_text(encoding="utf-8")
+
+
+def _render_customer_prompt_template(template: str, values: dict[str, str]) -> str:
+    for key, value in values.items():
+        template = template.replace("{{" + key + "}}", value)
+    return template
+
+
 def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[CustomerNote]]:
     summary_text = summary_path.read_text()
     summary_body = _strip_customer_header_link(summary_text)
@@ -714,36 +728,16 @@ def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[Cus
         else ""
     )
 
-    prompt = f"""You match a meeting summary to a project/customer note.
-
-Rules:
-- Prefer an existing project whenever the meeting is about that project, for that project, in preparation for that project, or about work likely to be delivered to that project.
-{internal_rules}- Prefer an existing project only when there is concrete evidence.
-- If the meeting seems project-related but no existing project matches well enough, use action "suggest_new".
-- Use action "no_match" only when even a new-project suggestion would be too speculative.
-- Keep the rationale short and evidence-based.
-
-Return only JSON with this schema:
-{{
-  "action": "link_existing" | "suggest_new" | "no_match",
-  "customer_name": "Existing customer name or null",
-  "suggested_name": "Suggested new customer/org name or null",
-  "confidence": "high" | "medium" | "low",
-  "rationale": "Short explanation"
-}}
-
-Known customer names:
-{candidate_names}
-
-Detailed notes for the most relevant candidates:
-{candidate_context}
-
-Calendar metadata:
-{calendar_lines}
-
-Meeting summary:
-{summary_body}
-"""
+    prompt = _render_customer_prompt_template(
+        _load_customer_prompt_template(),
+        {
+            "internal_rules": internal_rules,
+            "candidate_names": candidate_names,
+            "candidate_context": candidate_context,
+            "calendar_lines": calendar_lines,
+            "summary_body": summary_body,
+        },
+    )
 
     return prompt, candidates
 
@@ -801,7 +795,7 @@ def run_local_json_prompt(model: str, prompt: str) -> dict:
     llm = summarize_tool.load_local_model(model)
     response = llm.create_chat_completion(
         messages=[
-            {"role": "system", "content": "Return only valid JSON."},
+            {"role": "system", "content": CUSTOMER_JSON_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
         max_tokens=600,
@@ -896,7 +890,7 @@ def suggest_customer_link(
     return CustomerDecision(
         action=action,
         confidence=confidence,  # type: ignore[arg-type]
-        rationale=rationale or "Ingen tydlig motivering returnerades.",
+        rationale=rationale or "No clear rationale returned.",
         customer_name=customer_name,
         customer_path=customer_path,
         suggested_name=suggested_name,
@@ -1155,7 +1149,7 @@ def write_customer_metadata(summary_path: Path, metadata: CustomerMetadata) -> N
     if SUMMARY_HEADER_RE.search(updated):
         updated = SUMMARY_HEADER_RE.sub(repl, updated, count=1)
     else:
-        updated = f"## Mötessammanfattning {link}\n\n{updated.lstrip()}"
+        updated = f"{_cfg.summary_header} {link}\n\n{updated.lstrip()}"
 
     summary_path.write_text(updated)
     ensure_summary_transcript_link(summary_path)

@@ -68,14 +68,21 @@ class ProjectMatcherConfig:
     projects_dir: Path | None = None
     internal_project: str = ""
     model: str = "gpt-5.4-mini"
+    prompt_path: Path | None = None
+    json_system_prompt: str = "Return only valid JSON."
+    inactive_dir_names: list[str] = field(default_factory=lambda: ["inactive", "inaktiva"])
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectMatcherConfig":
         projects_dir = data.get("projects_dir")
+        prompt_path = data.get("prompt_path")
         return cls(
             projects_dir=Path(projects_dir).expanduser() if projects_dir else None,
             internal_project=data.get("internal_project", ""),
             model=data.get("model", "gpt-5.4-mini"),
+            prompt_path=Path(prompt_path).expanduser() if prompt_path else None,
+            json_system_prompt=data.get("json_system_prompt", "Return only valid JSON."),
+            inactive_dir_names=data.get("inactive_dir_names", ["inactive", "inaktiva"]),
         )
 
 
@@ -111,6 +118,7 @@ class MeetingsConfig:
     stopwords: list[str] = field(default_factory=list)
 
     # Summary formatting — what the summarizer produces. Language-specific.
+    summarize_prompt_path: Path | None = None
     # summary_header is the H2 heading that marks the start of the summary
     # (e.g. "## Meeting Summary" or "## Mötessammanfattning").
     summary_header: str = "## Meeting Summary"
@@ -176,6 +184,7 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
         ),
         project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
         stopwords=meetings.get("stopwords", []),
+        summarize_prompt_path=_path("summarize_prompt_path"),
         summary_header=meetings.get("summary_header", "## Meeting Summary"),
         personal_section_header=meetings.get("personal_section_header", ""),
         raw=merged,

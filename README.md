@@ -60,6 +60,13 @@ Copy `config.example.yaml` and split it into:
 
 Override the config dir with `HUGIN_CONFIG_DIR=/path`.
 
+The summary and project/customer matcher prompts are ordinary Markdown
+templates under `src/hugin_meetings/prompts/`. Set
+`meetings.summarize_prompt_path` or `meetings.project_matcher.prompt_path` to
+use your own versions. Matcher templates can use `{{candidate_names}}`,
+`{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, and
+`{{internal_rules}}`.
+
 ## CLI
 
 After `pip install -e .`:
@@ -103,7 +110,7 @@ src/hugin_meetings/
   calendar_match.py       Google Calendar matching
   diarization_compare.py  Diarization benchmark
   tui.py                  Interactive TUI
-  prompts/                Summary prompt templates
+  prompts/                Summary and matcher prompt templates
 
 frontends/
   gnome/                  GNOME tray widget (separate install target)

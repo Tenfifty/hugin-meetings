@@ -37,3 +37,6 @@ hugin-meet-tui = "hugin_meetings.tui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+hugin_meetings = ["prompts/*.md"]
