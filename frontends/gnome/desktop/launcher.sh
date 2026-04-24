@@ -12,5 +12,22 @@ unset SNAP_LIBRARY_PATH SNAP_NAME SNAP_REAL_HOME SNAP_REVISION
 unset SNAP_UID SNAP_USER_COMMON SNAP_USER_DATA SNAP_VERSION
 unset LOCPATH
 
-export PATH="$HOME/.local/bin:$PATH"
+# Prefer the repo's venv so the tray and every subprocess it spawns
+# (hugin-meet-tui, hugin-meet-transcribe, ...) use the pinned deps instead
+# of the system Python's numpy/pandas/etc.
+# Repo root is ../../.. from this script (frontends/gnome/desktop/).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+VENV_BIN="${HUGIN_MEETINGS_VENV:-$REPO_ROOT/.venv}/bin"
+
+if [[ -x "$VENV_BIN/hugin-meet-recorder" ]]; then
+    export VIRTUAL_ENV="$(dirname "$VENV_BIN")"
+    export PATH="$VENV_BIN:$HOME/.local/bin:$PATH"
+    # Clear PYTHONHOME/PYTHONPATH so the venv's site-packages isn't shadowed.
+    unset PYTHONHOME PYTHONPATH
+else
+    echo "launcher.sh: no venv at $VENV_BIN, falling back to ~/.local/bin" >&2
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+
 exec hugin-meet-recorder "$@"

@@ -24,7 +24,16 @@ from hugin_meetings.config import load_config
 
 _cfg = load_config()
 
-AUDIO_TUI_BIN = "hugin-meet-tui"
+def _resolve_sibling_bin(name: str) -> str:
+    """Prefer the hugin-meet-* binary next to the current interpreter so the
+    TUI runs in the same venv as the tray, even when gnome-terminal + a
+    login shell rewrites PATH.
+    """
+    candidate = Path(sys.executable).parent / name
+    return str(candidate) if candidate.exists() else name
+
+
+AUDIO_TUI_BIN = _resolve_sibling_bin("hugin-meet-tui")
 USER_SHELL = os.environ.get("SHELL") or "/usr/bin/zsh"
 
 AUDIO_DIR = _cfg.raw_audio_dir

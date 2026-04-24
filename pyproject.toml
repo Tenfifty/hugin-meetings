@@ -17,10 +17,13 @@ dependencies = [
 [project.optional-dependencies]
 transcribe = [
     "faster-whisper",
+    "whisperx",
     "pyannote.audio",
+    "nemo_toolkit[asr]",
     "torch",
     "torchaudio",
     "numpy",
+    "pandas",
     "soundfile",
 ]
 summarize = [
