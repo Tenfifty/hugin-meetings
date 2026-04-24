@@ -45,6 +45,18 @@ NOISY_VIRTUAL_LOCATIONS = {
     "microsoft teams meeting",
     "teams meeting",
 }
+RESPONSE_STATUS_PRIORITY = {
+    "accepted": 3,
+    "tentative": 2,
+    "needsAction": 1,
+    "declined": 0,
+}
+RESPONSE_STATUS_LABEL = {
+    "accepted": "yes",
+    "tentative": "maybe",
+    "needsAction": "not answered",
+    "declined": "no",
+}
 
 
 def local_tzinfo():
@@ -67,6 +79,7 @@ class Candidate:
     event: dict[str, Any]
     event_start: datetime
     event_end: datetime
+    response_status: str
     score: float
     reasons: list[str]
 
@@ -246,6 +259,53 @@ def event_time_bounds(event: dict[str, Any]) -> tuple[datetime | None, datetime 
     return start, end, start_all_day or end_all_day
 
 
+def normalize_response_status(status: Any) -> str:
+    value = str(status or "").strip()
+    if value in RESPONSE_STATUS_PRIORITY:
+        return value
+    normalized = re.sub(r"[\s_-]+", "", value.lower())
+    aliases = {
+        "accept": "accepted",
+        "accepted": "accepted",
+        "yes": "accepted",
+        "tentative": "tentative",
+        "maybe": "tentative",
+        "needsaction": "needsAction",
+        "needaction": "needsAction",
+        "notanswered": "needsAction",
+        "noresponse": "needsAction",
+        "unanswered": "needsAction",
+        "decline": "declined",
+        "declined": "declined",
+        "no": "declined",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    return "needsAction"
+
+
+def event_self_response_status(event: dict[str, Any]) -> str:
+    for attendee in event.get("attendees", []):
+        if attendee.get("self"):
+            return normalize_response_status(attendee.get("responseStatus"))
+
+    if event.get("organizer", {}).get("self") or event.get("creator", {}).get("self"):
+        return "accepted"
+
+    if not event.get("attendees"):
+        return "accepted"
+
+    return "needsAction"
+
+
+def response_priority(status: str) -> int:
+    return RESPONSE_STATUS_PRIORITY.get(status, RESPONSE_STATUS_PRIORITY["needsAction"])
+
+
+def response_label(status: str) -> str:
+    return RESPONSE_STATUS_LABEL.get(status, status or "not answered")
+
+
 def tokenize(text: str) -> set[str]:
     return {
         token
@@ -274,6 +334,8 @@ def score_event(
 
     score = 0.0
     reasons: list[str] = []
+    response_status = event_self_response_status(event)
+    reasons.append(f"response {response_label(response_status)}")
     overlap = overlap_seconds(event_start, event_end, transcript.start, transcript.end)
     min_overlap = transcript.duration.total_seconds() * MIN_OVERLAP_FRACTION
     if overlap <= min_overlap:
@@ -332,9 +394,14 @@ def score_event(
         event=event,
         event_start=event_start,
         event_end=event_end,
+        response_status=response_status,
         score=score,
         reasons=reasons,
     )
+
+
+def candidate_sort_key(candidate: Candidate) -> tuple[int, float]:
+    return (response_priority(candidate.response_status), candidate.score)
 
 
 def dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
@@ -348,9 +415,9 @@ def dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
             candidate.event_end.isoformat(),
         )
         current = best.get(key)
-        if current is None or candidate.score > current.score:
+        if current is None or candidate_sort_key(candidate) > candidate_sort_key(current):
             best[key] = candidate
-    return sorted(best.values(), key=lambda item: item.score, reverse=True)
+    return sorted(best.values(), key=candidate_sort_key, reverse=True)
 
 
 def confidence_label(score: float) -> str:
@@ -483,6 +550,7 @@ def render_metadata(
         lines.extend(
             [
                 f"- Event: {event.get('summary') or '(untitled)'}",
+                f"- Response: {response_label(best.response_status)}",
                 f"- Organizer: {organizer.get('displayName') or organizer.get('email') or '-'}",
                 f"- Attendees: {summarize_attendees(event.get('attendees', []), event.get('location'))}",
                 f"- Location: {location}",
