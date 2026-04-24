@@ -10,7 +10,6 @@ Usage:
 import argparse
 import gc
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -18,8 +17,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from .cli_utils import get_hf_token
 from .pipeline import (
+    SPEAKER_RE,
     extract_timestamp,
+    is_backchannel,
     parse_raw_audio_part,
     raw_audio_session,
     scan_raw_audio_sessions,
@@ -41,11 +43,6 @@ SPEAKER_MATCH_THRESHOLD = 0.5  # cosine similarity threshold for speaker matchin
 MIN_ID_SEGMENT_DURATION = 2.5
 MAX_ID_SEGMENT_DURATION = 30.0
 MIN_ID_WORDS = 4
-BACKCHANNEL_WORDS = {
-    "mm", "mhm", "mmm", "ja", "jo", "yes", "yeah", "ok", "okej", "okay",
-    "aha", "haha", "hm", "hmm", "nej", "nä", "no", "jaha", "japp",
-}
-ANON_SPEAKER_RE = re.compile(r"^(?:speaker|SPEAKER)_(\d+)$")
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -220,11 +217,6 @@ def load_diarizer(diarizer_name: str, device: str, hf_token: str | None):
     raise ValueError(f"Unknown diarizer: {diarizer_name}")
 
 
-def _is_backchannel(text: str) -> bool:
-    words = text.lower().strip().split()
-    return bool(words) and all(w.strip(".,!?") in BACKCHANNEL_WORDS for w in words)
-
-
 def _filter_segments_for_identification(segments: list[dict], speaker_label: str) -> list[dict]:
     candidates = []
     for seg in segments:
@@ -236,7 +228,7 @@ def _filter_segments_for_identification(segments: list[dict], speaker_label: str
         text = seg.get("text", "").strip()
         if len(text.split()) < MIN_ID_WORDS:
             continue
-        if _is_backchannel(text):
+        if is_backchannel(text):
             continue
         candidates.append(seg)
     return candidates
@@ -587,23 +579,6 @@ def _fmt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def get_hf_token() -> str | None:
-    """Try to get HuggingFace token from standard locations."""
-    try:
-        from huggingface_hub import HfFolder
-        token = HfFolder.get_token()
-        if token:
-            return token
-    except Exception:
-        pass
-
-    token_file = Path.home() / ".cache" / "huggingface" / "token"
-    if token_file.exists():
-        return token_file.read_text().strip()
-
-    return None
-
-
 def _describe_parts(paths: list[Path]) -> str:
     if not paths:
         return "0 parts"
@@ -658,7 +633,7 @@ def _relabel_anonymous_entries(
 
     for entry in entries:
         speaker = entry.get("speaker", "unknown")
-        match = ANON_SPEAKER_RE.match(str(speaker))
+        match = SPEAKER_RE.match(str(speaker))
         if match:
             speaker = f"SPEAKER_{match.group(1)}"
             if use_part_suffix:

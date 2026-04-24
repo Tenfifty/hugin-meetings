@@ -22,14 +22,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from .pipeline import transcript_json_for_markdown
+from .cli_utils import resolve_transcript_md
+from .pipeline import extract_timestamp, transcript_json_for_markdown
 from .config import load_config
 
 _cfg = load_config()
 TRANSCRIPT_DIR = _cfg.transcripts_dir
 METADATA_START = "<!-- calendar-metadata:start -->"
 METADATA_END = "<!-- calendar-metadata:end -->"
-TIMESTAMP_RE = re.compile(r"transcript-(\d{8}-\d{6})")
 SEGMENT_TS_RE = re.compile(r"\*\*\[(\d{2}):(\d{2}):(\d{2})\]")
 DEFAULT_GWS_CONFIG_DIR = _cfg.gws_config_dir or (Path.home() / ".config" / "gws")
 DEFAULT_GWS_CREDENTIALS_FILE = DEFAULT_GWS_CONFIG_DIR / "credentials.json"
@@ -89,30 +89,16 @@ class GwsError(RuntimeError):
 
 
 def resolve_transcript(name: str | None) -> Path:
-    if name is None:
-        files = sorted(TRANSCRIPT_DIR.glob("transcript-*.md"))
-        if not files:
-            raise GwsError("No transcripts found.")
-        return files[-1]
-
-    path = Path(name)
-    if path.exists():
-        return path.resolve()
-    if (TRANSCRIPT_DIR / path).exists():
-        return (TRANSCRIPT_DIR / path).resolve()
-    if (TRANSCRIPT_DIR / f"transcript-{path}").exists():
-        return (TRANSCRIPT_DIR / f"transcript-{path}").resolve()
-    raise GwsError(f"Transcript not found: {name}")
+    return resolve_transcript_md(TRANSCRIPT_DIR, name).resolve()
 
 
 def transcript_start_from_name(path: Path) -> datetime:
-    match = TIMESTAMP_RE.search(path.name)
-    if not match:
+    ts = extract_timestamp(path.name)
+    if not ts:
         raise GwsError(
             f"Could not infer transcript timestamp from filename: {path.name}"
         )
-    start = datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
-    return start.replace(tzinfo=local_tzinfo())
+    return datetime.strptime(ts, "%Y%m%d-%H%M%S").replace(tzinfo=local_tzinfo())
 
 
 def transcript_duration(path: Path, text: str) -> timedelta:

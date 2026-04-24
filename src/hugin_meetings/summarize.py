@@ -11,6 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .cli_utils import resolve_transcript_md
 from .config import load_config
 from .remote_llm import run_prompt
 _cfg = load_config()
@@ -109,21 +110,7 @@ def summarize_remote(model_id: str, transcript_text: str) -> str:
 
 
 def resolve_transcript(name: str | None) -> Path:
-    if name is None:
-        files = sorted(TRANSCRIPT_DIR.glob("transcript-*.md"))
-        if not files:
-            print("No transcripts found.", file=sys.stderr)
-            sys.exit(1)
-        return files[-1]
-    path = Path(name)
-    if path.exists():
-        return path
-    if (TRANSCRIPT_DIR / path).exists():
-        return TRANSCRIPT_DIR / path
-    if (TRANSCRIPT_DIR / f"transcript-{path}").exists():
-        return TRANSCRIPT_DIR / f"transcript-{path}"
-    print(f"Transcript not found: {name}", file=sys.stderr)
-    sys.exit(1)
+    return resolve_transcript_md(TRANSCRIPT_DIR, name)
 
 
 def process_transcript(model_key: str, model, md_path: Path):

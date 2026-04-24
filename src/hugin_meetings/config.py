@@ -230,37 +230,28 @@ class MeetingsConfig:
 def _build(merged: dict[str, Any]) -> MeetingsConfig:
     merged = _expand(merged)
     meetings = merged.get("meetings", {}) if "meetings" in merged else merged
-    llm_data = dict(meetings.get("llm", {}))
-    if meetings.get("llm_provider"):
-        llm_data["provider"] = meetings["llm_provider"]
-    llm = LLMConfig.from_dict(llm_data)
+    llm = LLMConfig.from_dict(meetings.get("llm", {}))
 
-    def _path(key: str, default: Path | None = None) -> Path | None:
-        value = meetings.get(key)
-        if value:
-            return Path(value).expanduser()
-        return default
+    def _path(key: str) -> Path | None:
+        # Falls back from meetings.<key> to top-level <key> (shared across hugin-* tools).
+        value = meetings.get(key) or merged.get(key)
+        return Path(value).expanduser() if value else None
 
+    defaults = MeetingsConfig()
     cfg = MeetingsConfig(
         user_name=merged.get("user_name", ""),
-        vault_path=_path("vault_path") or (Path(merged["vault_path"]).expanduser() if merged.get("vault_path") else None),
-        transcripts_dir=_path("transcripts_dir") or MeetingsConfig().transcripts_dir,
-        summaries_dir=_path("summaries_dir") or MeetingsConfig().summaries_dir,
-        state_dir=_path("state_dir") or MeetingsConfig().state_dir,
+        vault_path=_path("vault_path"),
+        transcripts_dir=_path("transcripts_dir") or defaults.transcripts_dir,
+        summaries_dir=_path("summaries_dir") or defaults.summaries_dir,
+        state_dir=_path("state_dir") or defaults.state_dir,
         whisper_model=meetings.get("whisper_model", "large-v3"),
         compute_type=meetings.get("compute_type", "float16"),
         summarize_n_gpu_layers=meetings.get("summarize_n_gpu_layers"),
         summarize_hybrid_threshold_gb=float(meetings.get("summarize_hybrid_threshold_gb", 10.0)),
         summarize_hybrid_n_gpu_layers=int(meetings.get("summarize_hybrid_n_gpu_layers", 10)),
         gws_bin=meetings.get("gws_bin", merged.get("gws_bin", "gws")),
-        gws_config_dir=_path("gws_config_dir") or (
-            Path(merged["gws_config_dir"]).expanduser()
-            if merged.get("gws_config_dir") else None
-        ),
-        journal_path=_path("journal_path") or (
-            Path(merged["journal_path"]).expanduser()
-            if merged.get("journal_path") else None
-        ),
+        gws_config_dir=_path("gws_config_dir"),
+        journal_path=_path("journal_path"),
         project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
         llm=llm,
         summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),

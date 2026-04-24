@@ -48,7 +48,18 @@ TS_RE = re.compile(r"(\d{8}-\d{6})")
 RAW_AUDIO_RE = re.compile(
     r"^(?P<prefix>mic|sys)-(?P<ts>\d{8}-\d{6})(?:-p(?P<part>\d{2}))?\.opus$"
 )
-SPEAKER_RE = re.compile(r"^(?:speaker|SPEAKER)_\d+(?:_p\d{2})?$")
+SPEAKER_RE = re.compile(r"^(?:speaker|SPEAKER)_(\d+)(?:_p\d{2})?$")
+
+BACKCHANNEL_WORDS = {
+    "mm", "mhm", "mmm", "ja", "jo", "yes", "yeah", "ok", "okej", "okay",
+    "aha", "haha", "hm", "hmm", "nej", "nä", "no", "jaha", "japp",
+}
+
+
+def is_backchannel(text: str) -> bool:
+    """True if ``text`` is non-empty and consists only of backchannel words."""
+    words = text.lower().strip().split()
+    return bool(words) and all(w.strip(".,!?") in BACKCHANNEL_WORDS for w in words)
 FIELD_RE = re.compile(r"^- ([^:]+):\s*(.*)$")
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 SUMMARY_HEADER_RE = re.compile(

@@ -23,7 +23,6 @@ transcribe = [
     "torch",
     "torchaudio",
     "numpy",
-    "pandas",
     "soundfile",
 ]
 summarize = [
@@ -35,7 +34,6 @@ hugin-meet-transcribe = "hugin_meetings.transcribe:main"
 hugin-meet-summarize = "hugin_meetings.summarize:main"
 hugin-meet-enroll = "hugin_meetings.enroll:main"
 hugin-meet-match-calendar = "hugin_meetings.calendar_match:main"
-hugin-meet-compare-diarization = "hugin_meetings.diarization_compare:main"
 hugin-meet-tui = "hugin_meetings.tui:main"
 
 [tool.setuptools.packages.find]

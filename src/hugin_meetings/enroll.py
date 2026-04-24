@@ -17,7 +17,13 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from .pipeline import TRANSCRIPT_JSON_DIR, raw_audio_session, transcript_json_for_markdown
+from .cli_utils import get_hf_token
+from .pipeline import (
+    TRANSCRIPT_JSON_DIR,
+    is_backchannel,
+    raw_audio_session,
+    transcript_json_for_markdown,
+)
 from .config import load_config
 
 _cfg = load_config()
@@ -35,23 +41,6 @@ MIN_READY_SEGMENTS = 20       # don't use for matching until we have this many
 OUTLIER_THRESHOLD = 0.3       # reject segment if cosine to current centroid < this
 AMBIGUITY_GAP = 0.1           # reject if gap between best and second-best match < this
 MATCH_THRESHOLD = 0.5         # minimum cosine similarity for a match
-
-BACKCHANNEL_WORDS = {
-    "mm", "mhm", "mmm", "ja", "jo", "yes", "yeah", "ok", "okej", "okay",
-    "aha", "haha", "hm", "hmm", "nej", "nä", "no", "jaha", "japp",
-}
-
-
-def get_hf_token() -> str | None:
-    try:
-        from huggingface_hub import HfFolder
-        return HfFolder.get_token()
-    except Exception:
-        pass
-    token_file = Path.home() / ".cache" / "huggingface" / "token"
-    if token_file.exists():
-        return token_file.read_text().strip()
-    return None
 
 
 # --- Speaker storage ---
@@ -112,11 +101,6 @@ def load_all_centroids() -> dict[str, np.ndarray]:
 
 
 # --- Segment filtering ---
-
-def is_backchannel(text: str) -> bool:
-    words = text.lower().strip().split()
-    return all(w.strip(".,!?") in BACKCHANNEL_WORDS for w in words)
-
 
 def filter_segments(entries: list[dict], channel: str, speaker_label: str) -> list[dict]:
     """Filter segments for enrollment quality."""

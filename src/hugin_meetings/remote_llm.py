@@ -19,8 +19,8 @@ def _clean_cwd(cfg: LLMConfig) -> Path:
     return cfg.clean_cwd
 
 
-def _run_checked(cmd: list[str], prompt: str, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _run(cmd: list[str], prompt: str, cwd: Path, timeout: int, provider: str) -> str:
+    result = subprocess.run(
         cmd,
         input=prompt,
         cwd=cwd,
@@ -28,13 +28,10 @@ def _run_checked(cmd: list[str], prompt: str, cwd: Path, timeout: int) -> subpro
         text=True,
         timeout=timeout,
     )
-
-
-def _raise_for_failure(provider: str, result: subprocess.CompletedProcess[str]) -> None:
-    if result.returncode == 0:
-        return
-    detail = (result.stderr or result.stdout).strip()
-    raise RuntimeError(detail or f"{provider} prompt failed")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or f"{provider} prompt failed")
+    return result.stdout
 
 
 def _run_codex(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
@@ -56,8 +53,7 @@ def _run_codex(cfg: LLMConfig, model: str, prompt: str, effort: str | None, time
         if effort:
             cmd.extend(["-c", f"model_reasoning_effort={effort}"])
         cmd.extend([*cfg.codex_args, "-o", str(out_path), "-"])
-        result = _run_checked(cmd, prompt, cwd, timeout)
-        _raise_for_failure("codex", result)
+        _run(cmd, prompt, cwd, timeout, "codex")
         return out_path.read_text(encoding="utf-8").strip()
     finally:
         out_path.unlink(missing_ok=True)
@@ -79,9 +75,7 @@ def _run_claude(cfg: LLMConfig, model: str, prompt: str, effort: str | None, tim
         cmd.extend(["--model", model])
     if effort:
         cmd.extend(["--effort", effort])
-    result = _run_checked(cmd, prompt, cwd, timeout)
-    _raise_for_failure("claude", result)
-    return result.stdout.strip()
+    return _run(cmd, prompt, cwd, timeout, "claude").strip()
 
 
 def _prepare_gemini_cwd(cfg: LLMConfig) -> Path:
@@ -121,9 +115,7 @@ def _run_gemini(cfg: LLMConfig, model: str, prompt: str, effort: str | None, tim
     ]
     if not _uses_default_model(model):
         cmd[1:1] = ["--model", model]
-    result = _run_checked(cmd, prompt, cwd, timeout)
-    _raise_for_failure("gemini", result)
-    return result.stdout.strip()
+    return _run(cmd, prompt, cwd, timeout, "gemini").strip()
 
 
 def _run_local_command(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
@@ -137,9 +129,15 @@ def _run_local_command(cfg: LLMConfig, model: str, prompt: str, effort: str | No
         part.replace("{model}", model_value).replace("{effort}", effort_value)
         for part in cfg.local_command
     ]
-    result = _run_checked(cmd, prompt, cwd, timeout)
-    _raise_for_failure("local", result)
-    return result.stdout.strip()
+    return _run(cmd, prompt, cwd, timeout, "local").strip()
+
+
+_PROVIDERS = {
+    "codex": _run_codex,
+    "claude": _run_claude,
+    "gemini": _run_gemini,
+    "local": _run_local_command,
+}
 
 
 def run_prompt(
@@ -149,12 +147,7 @@ def run_prompt(
     effort: str | None = None,
     timeout: int = 300,
 ) -> str:
-    if cfg.provider == "codex":
-        return _run_codex(cfg, model, prompt, effort, timeout)
-    if cfg.provider == "claude":
-        return _run_claude(cfg, model, prompt, effort, timeout)
-    if cfg.provider == "gemini":
-        return _run_gemini(cfg, model, prompt, effort, timeout)
-    if cfg.provider == "local":
-        return _run_local_command(cfg, model, prompt, effort, timeout)
-    raise ValueError(f"Unsupported LLM provider: {cfg.provider}")
+    runner = _PROVIDERS.get(cfg.provider)
+    if runner is None:
+        raise ValueError(f"Unsupported LLM provider: {cfg.provider}")
+    return runner(cfg, model, prompt, effort, timeout)
