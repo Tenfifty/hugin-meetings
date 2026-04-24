@@ -2,7 +2,6 @@
 # ----------------------------------------------------------------
 # Any field here may also live in meetings.yaml — meetings.yaml wins.
 
-language: sv                       # primary language for prompts/summaries
 user_name: "Your Name"
 vault_path: ~/Documents/notes      # your knowledge base / Obsidian vault
 
@@ -88,12 +87,3 @@ meetings:
     inactive_dir_names:
       - inactive
       - inaktiva
-
-  # Stopwords used by fuzzy token matching. Tune to your language(s).
-  stopwords:
-    - the
-    - and
-    - for
-    - with
-    # - och  # Swedish
-    # - att

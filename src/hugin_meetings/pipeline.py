@@ -50,7 +50,6 @@ RAW_AUDIO_RE = re.compile(
 )
 SPEAKER_RE = re.compile(r"^(?:speaker|SPEAKER)_\d+(?:_p\d{2})?$")
 FIELD_RE = re.compile(r"^- ([^:]+):\s*(.*)$")
-TOKEN_RE = re.compile(r"[a-zA-Z0-9åäöÅÄÖ]{3,}")
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 SUMMARY_HEADER_RE = re.compile(
     rf"^({re.escape(_cfg.summary_header)})(.*)$", re.MULTILINE
@@ -58,11 +57,6 @@ SUMMARY_HEADER_RE = re.compile(
 PERSONAL_SECTION_HEADER = _cfg.personal_section_header
 TRANSCRIPT_LINK_RE = re.compile(r"^\[Transcript\]\([^)]+\)\s*$", re.MULTILINE)
 CUSTOMER_ENTRY_HEADER_RE = re.compile(r"^## <\d{4}-\d{2}-\d{2} [^>]+>\s*$", re.MULTILINE)
-
-_DEFAULT_STOPWORDS = {
-    "the", "and", "from", "that", "this", "they", "with", "are", "you",
-}
-STOPWORDS = set(_cfg.stopwords) if _cfg.stopwords else _DEFAULT_STOPWORDS
 
 CustomerAction = Literal["link_existing", "suggest_new", "no_match"]
 CustomerStatus = Literal["linked", "suggested_new", "no_match"]
@@ -74,7 +68,6 @@ CUSTOMER_JSON_SYSTEM_PROMPT = _cfg.project_matcher.json_system_prompt
 INACTIVE_DIR_NAMES = set(_cfg.project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
 MAX_MEETING_TEXT = 12000
-MAX_CANDIDATES = 10
 DEFAULT_CUSTOMER_PROMPT_PATH = Path(__file__).parent / "prompts" / "project_matcher_default.md"
 
 
@@ -232,14 +225,6 @@ class MeetingStatus:
             "G" if self.has_customer_guess else ".",
         ]
         return "".join(flags)
-
-
-def tokenize(text: str) -> set[str]:
-    return {
-        token.lower()
-        for token in TOKEN_RE.findall(text)
-        if token.lower() not in STOPWORDS
-    }
 
 
 def extract_timestamp(name: str) -> str | None:
@@ -633,52 +618,6 @@ def scan_recordings() -> list[MeetingStatus]:
     return meetings
 
 
-def select_customer_candidates(meeting_text: str, notes: list[CustomerNote]) -> list[CustomerNote]:
-    meeting_tokens = tokenize(meeting_text)
-    lower_text = meeting_text.lower()
-
-    scored: list[tuple[float, CustomerNote]] = []
-    for note in notes:
-        score = 0.0
-        note_name_lower = note.name.lower()
-        if note_name_lower in lower_text:
-            score += 90.0
-
-        name_tokens = tokenize(note.name)
-        preview_tokens = tokenize(note.preview[:400])
-        score += len(name_tokens & meeting_tokens) * 12.0
-        score += len(preview_tokens & meeting_tokens) * 1.5
-
-        if note.is_active:
-            score += 4.0
-
-        if score > 0:
-            scored.append((score, note))
-
-    scored.sort(key=lambda item: (-item[0], item[1].name.lower()))
-
-    picked: list[CustomerNote] = []
-    seen: set[Path] = set()
-    for _, note in scored:
-        if note.path in seen:
-            continue
-        picked.append(note)
-        seen.add(note.path)
-        if len(picked) >= MAX_CANDIDATES:
-            break
-
-    if not picked:
-        active = [note for note in notes if note.is_active][:MAX_CANDIDATES]
-        picked.extend(active)
-
-    if INTERNAL_PROJECT:
-        internal_note = next((note for note in notes if note.name == INTERNAL_PROJECT), None)
-        if internal_note and internal_note.path not in seen:
-            picked.insert(0, internal_note)
-
-    return picked[:MAX_CANDIDATES]
-
-
 def _load_customer_prompt_template() -> str:
     path = _cfg.project_matcher.prompt_path or DEFAULT_CUSTOMER_PROMPT_PATH
     return path.read_text(encoding="utf-8")
@@ -704,13 +643,11 @@ def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[Cus
     ) or "- (no calendar metadata)"
 
     all_notes = list_customer_notes()
-    candidates = select_customer_candidates(summary_body + "\n" + "\n".join(calendar_fields.values()), all_notes)
 
-    candidate_names = "\n".join(f"- {note.name}" for note in all_notes)
     candidate_context = "\n\n".join(
         [
             f"Customer: {note.name}\nPath: {_relative_or_absolute(note.path)}\nNotes: {note.preview}"
-            for note in candidates
+            for note in all_notes
         ]
     )
 
@@ -729,14 +666,13 @@ def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[Cus
         _load_customer_prompt_template(),
         {
             "internal_rules": internal_rules,
-            "candidate_names": candidate_names,
             "candidate_context": candidate_context,
             "calendar_lines": calendar_lines,
             "summary_body": summary_body,
         },
     )
 
-    return prompt, candidates
+    return prompt, all_notes
 
 
 def extract_json_object(text: str) -> dict:

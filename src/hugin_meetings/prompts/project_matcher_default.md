@@ -16,10 +16,7 @@ Return only JSON with this schema:
   "rationale": "Short explanation"
 }
 
-Known customer names:
-{{candidate_names}}
-
-Detailed notes for the most relevant candidates:
+Known customers:
 {{candidate_context}}
 
 Calendar metadata:

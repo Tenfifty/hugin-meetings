@@ -63,9 +63,8 @@ Override the config dir with `HUGIN_CONFIG_DIR=/path`.
 The summary and project/customer matcher prompts are ordinary Markdown
 templates under `src/hugin_meetings/prompts/`. Set
 `meetings.summarize_prompt_path` or `meetings.project_matcher.prompt_path` to
-use your own versions. Matcher templates can use `{{candidate_names}}`,
-`{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, and
-`{{internal_rules}}`.
+use your own versions. Matcher templates can use `{{candidate_context}}`,
+`{{calendar_lines}}`, `{{summary_body}}`, and `{{internal_rules}}`.
 
 Remote and local command models use `meetings.llm.provider`, which can be
 `codex`, `claude`, `gemini`, or `local`. The default is `codex`. Claude Code

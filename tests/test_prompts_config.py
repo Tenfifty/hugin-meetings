@@ -102,7 +102,6 @@ class ProjectMatcherPromptTests(unittest.TestCase):
         template_path = self.base / "matcher.md"
         template_path.write_text(
             "CUSTOM TEMPLATE\n"
-            "Names:\n{{candidate_names}}\n"
             "Context:\n{{candidate_context}}\n"
             "Calendar:\n{{calendar_lines}}\n"
             "Summary:\n{{summary_body}}\n"
@@ -119,7 +118,7 @@ class ProjectMatcherPromptTests(unittest.TestCase):
             prompt, candidates = pipeline.build_customer_prompt(summary_path, "gpt-5.4-mini")
 
         self.assertIn("CUSTOM TEMPLATE", prompt)
-        self.assertIn("- Project Apollo", prompt)
+        self.assertIn("Customer: Project Apollo", prompt)
         self.assertIn("Discussed Project Apollo.", prompt)
         self.assertIn("- (no calendar metadata)", prompt)
         self.assertEqual([candidate.name for candidate in candidates], ["Project Apollo"])

@@ -153,7 +153,6 @@ class ProjectMatcherConfig:
 @dataclass
 class MeetingsConfig:
     # Shared
-    language: str = "en"
     user_name: str = ""
     vault_path: Path | None = None
 
@@ -190,9 +189,6 @@ class MeetingsConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     summary_model: str = DEFAULT_REMOTE_MODEL
     summary_effort: str = DEFAULT_SUMMARY_EFFORT
-
-    # Stopwords for fuzzy matching (lang-specific)
-    stopwords: list[str] = field(default_factory=list)
 
     # Summary formatting — what the summarizer produces. Language-specific.
     summarize_prompt_path: Path | None = None
@@ -246,7 +242,6 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
         return default
 
     cfg = MeetingsConfig(
-        language=merged.get("language", "en"),
         user_name=merged.get("user_name", ""),
         vault_path=_path("vault_path") or (Path(merged["vault_path"]).expanduser() if merged.get("vault_path") else None),
         transcripts_dir=_path("transcripts_dir") or MeetingsConfig().transcripts_dir,
@@ -270,7 +265,6 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
         llm=llm,
         summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),
         summary_effort=meetings.get("summary_effort", DEFAULT_SUMMARY_EFFORT),
-        stopwords=meetings.get("stopwords", []),
         summarize_prompt_path=_path("summarize_prompt_path"),
         summary_header=meetings.get("summary_header", "## Meeting Summary"),
         personal_section_header=meetings.get("personal_section_header", ""),
