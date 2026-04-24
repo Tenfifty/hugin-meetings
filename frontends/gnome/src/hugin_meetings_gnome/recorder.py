@@ -30,10 +30,9 @@ USER_SHELL = os.environ.get("SHELL") or "/usr/bin/zsh"
 AUDIO_DIR = _cfg.raw_audio_dir
 STATE_DIR = _cfg.recorder_state_dir
 # Optional: path to a daily journal file. Recorder reads it to pre-populate
-# today's scheduled meetings in the menu. Set meetings.journal_path in config
-# to enable, otherwise the feature is silently skipped.
-_journal_cfg = _cfg.raw.get("meetings", {}).get("journal_path")
-JOURNAL_PATH = Path(_journal_cfg).expanduser() if _journal_cfg else None
+# today's scheduled meetings in the menu. Set journal_path in hugin.yaml
+# (or meetings.journal_path) to enable; otherwise the feature is silently skipped.
+JOURNAL_PATH = _cfg.journal_path
 REMINDER_STATE_PATH = STATE_DIR / "recorder-reminders.json"
 SEGMENT_MINUTES = 65
 PENDING_REFRESH_SECONDS = 10

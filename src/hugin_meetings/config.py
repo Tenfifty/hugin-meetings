@@ -97,9 +97,12 @@ class MeetingsConfig:
     whisper_model: str = "large-v3"
     compute_type: str = "float16"
 
-    # Calendar
+    # Calendar (shared with other hugin-* tools; may live at top level)
     gws_bin: str = "gws"
     gws_config_dir: Path | None = None
+
+    # Daily journal file (shared; may live at top level)
+    journal_path: Path | None = None
 
     # Project/customer matching
     project_matcher: ProjectMatcherConfig = field(default_factory=ProjectMatcherConfig)
@@ -162,8 +165,15 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
         state_dir=_path("state_dir") or MeetingsConfig().state_dir,
         whisper_model=meetings.get("whisper_model", "large-v3"),
         compute_type=meetings.get("compute_type", "float16"),
-        gws_bin=meetings.get("gws_bin", "gws"),
-        gws_config_dir=_path("gws_config_dir"),
+        gws_bin=meetings.get("gws_bin", merged.get("gws_bin", "gws")),
+        gws_config_dir=_path("gws_config_dir") or (
+            Path(merged["gws_config_dir"]).expanduser()
+            if merged.get("gws_config_dir") else None
+        ),
+        journal_path=_path("journal_path") or (
+            Path(merged["journal_path"]).expanduser()
+            if merged.get("journal_path") else None
+        ),
         project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
         stopwords=meetings.get("stopwords", []),
         summary_header=meetings.get("summary_header", "## Meeting Summary"),
