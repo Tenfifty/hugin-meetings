@@ -37,6 +37,7 @@ REMINDER_STATE_PATH = STATE_DIR / "recorder-reminders.json"
 SEGMENT_MINUTES = 65
 PENDING_REFRESH_SECONDS = 10
 REMINDER_CHECK_SECONDS = 30
+DEVICE_CHECK_SECONDS = 2
 START_PROMPT_GRACE_SECONDS = 10 * 60
 MAX_MEETING_DURATION = timedelta(hours=4)
 LOG_PATH = Path("/tmp/hugin-audio-recorder.log")
@@ -70,25 +71,115 @@ def _log_unhandled_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = _log_unhandled_exception
 
 
-def get_default_monitor_source():
-    """Get the monitor source for the default audio output sink."""
+def _load_pipewire_nodes():
     try:
         result = subprocess.run(
-            ["pw-dump"], capture_output=True, text=True, timeout=5
+            ["pw-dump"], capture_output=True, text=True, timeout=5, check=True
         )
-        import json
-        nodes = json.loads(result.stdout)
-        # Find the default sink name, then construct monitor name
-        for n in nodes:
-            props = n.get("info", {}).get("props", {})
-            if props.get("media.class") == "Audio/Sink":
-                name = props.get("node.name", "")
-                if name:
-                    return f"{name}.monitor"
+        return json.loads(result.stdout)
     except Exception:
-        pass
-    # Fallback: common name on most PipeWire setups
+        logging.exception("Failed to inspect PipeWire nodes")
+        return None
+
+
+def _metadata_name(value):
+    if isinstance(value, dict):
+        name = value.get("name")
+        return name if isinstance(name, str) and name else None
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(parsed, dict):
+        name = parsed.get("name")
+        return name if isinstance(name, str) and name else None
+    return None
+
+
+def _node_props(node):
+    return node.get("info", {}).get("props") or node.get("props", {})
+
+
+def _node_metadata(node):
+    return node.get("info", {}).get("metadata") or node.get("metadata", [])
+
+
+def _default_pipewire_node_name(nodes, media_class):
+    default_key = f"default.audio.{media_class.removeprefix('Audio/').lower()}"
+    configured_key = f"default.configured.audio.{media_class.removeprefix('Audio/').lower()}"
+    candidates = {}
+
+    for node in nodes:
+        props = _node_props(node)
+        if props.get("metadata.name") != "default":
+            continue
+        for item in _node_metadata(node):
+            key = item.get("key")
+            if key in {default_key, configured_key}:
+                candidates[key] = _metadata_name(item.get("value"))
+
+    for key in (default_key, configured_key):
+        name = candidates.get(key)
+        if name:
+            return name
+    return None
+
+
+def _first_pipewire_node_name(nodes, media_class):
+    for node in nodes:
+        props = _node_props(node)
+        if props.get("media.class") == media_class:
+            name = props.get("node.name")
+            if name:
+                return name
+    return None
+
+
+def _resolve_default_audio_source(nodes):
+    source = _default_pipewire_node_name(nodes, "Audio/Source")
+    return source or _first_pipewire_node_name(nodes, "Audio/Source") or "default"
+
+
+def _resolve_default_monitor_source(nodes):
+    sink = _default_pipewire_node_name(nodes, "Audio/Sink")
+    if sink:
+        return f"{sink}.monitor"
+
+    sink = _first_pipewire_node_name(nodes, "Audio/Sink")
+    if sink:
+        return f"{sink}.monitor"
+
     return "alsa_output.pci-0000_65_00.6.analog-stereo.monitor"
+
+
+def get_default_audio_routes(log=True):
+    """Get the current mic and monitor sources for ffmpeg's pulse inputs."""
+    nodes = _load_pipewire_nodes()
+    if nodes is None:
+        logging.info("Falling back to generic PulseAudio routes")
+        return "default", "alsa_output.pci-0000_65_00.6.analog-stereo.monitor"
+
+    mic_source = _resolve_default_audio_source(nodes)
+    monitor_source = _resolve_default_monitor_source(nodes)
+    if log:
+        logging.info(
+            "Using audio routes: mic=%s sys=%s",
+            mic_source,
+            monitor_source,
+        )
+    return mic_source, monitor_source
+
+
+def get_default_audio_source():
+    """Get the current default microphone/source for ffmpeg's pulse input."""
+    return get_default_audio_routes()[0]
+
+
+def get_default_monitor_source():
+    """Get the monitor source for the current default audio output sink."""
+    return get_default_audio_routes()[1]
 
 
 class Track:
@@ -99,6 +190,7 @@ class Track:
         self.pulse_source = pulse_source
         self.recording = False
         self.process = None
+        self.log_file = None
         self.current_file = None
         self.session_id = None
         self.next_part = 1
@@ -110,22 +202,47 @@ class Track:
             raise RuntimeError(f"No session id assigned for {self.prefix} recording")
 
         self.current_file = AUDIO_DIR / f"{self.prefix}-{self.session_id}-p{self.next_part:02d}.opus"
-        logging.info("Starting %s recording: %s", self.prefix, self.current_file)
-        self.process = subprocess.Popen(
-            [
-                "ffmpeg", "-y",
-                "-f", "pulse",
-                "-i", self.pulse_source,
-                "-ac", "1",
-                "-c:a", "libopus",
-                "-b:a", "24k",
-                "-application", "voip",
-                str(self.current_file),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        command = [
+            "ffmpeg", "-y",
+            "-f", "pulse",
+            "-i", self.pulse_source,
+            "-ac", "1",
+            "-c:a", "libopus",
+            "-b:a", "24k",
+            "-application", "voip",
+            str(self.current_file),
+        ]
+        logging.info(
+            "Starting %s recording from %s: %s",
+            self.prefix,
+            self.pulse_source,
+            self.current_file,
         )
+        self.log_file = LOG_PATH.open("a", encoding="utf-8")
+        self.log_file.write(
+            f"\n--- ffmpeg {self.prefix} {self.session_id} p{self.next_part:02d} "
+            f"{datetime.now().isoformat(timespec='seconds')} ---\n"
+        )
+        self.log_file.flush()
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=self.log_file,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            self._close_log_file()
+            raise
+        time.sleep(0.2)
+        if self.process.poll() is not None:
+            returncode = self.process.returncode
+            self._close_log_file()
+            self.process = None
+            raise RuntimeError(
+                f"ffmpeg exited while starting {self.prefix} recording "
+                f"from {self.pulse_source} with code {returncode}"
+            )
         self.next_part += 1
 
     def stop_segment(self):
@@ -137,6 +254,7 @@ class Track:
             except subprocess.TimeoutExpired:
                 self.process.kill()
         self.process = None
+        self._close_log_file()
 
     def rotate_segment(self):
         self.stop_segment()
@@ -157,6 +275,15 @@ class Track:
         self.session_id = None
         self.next_part = 1
         self.start_time = None
+
+    def _close_log_file(self):
+        if self.log_file is None:
+            return
+        try:
+            self.log_file.close()
+        except Exception:
+            logging.exception("Failed to close ffmpeg log file")
+        self.log_file = None
 
 
 @dataclass(frozen=True)
@@ -253,8 +380,9 @@ class AudioRecorder:
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.mic = Track("mic", "default")
-        self.system = Track("sys", get_default_monitor_source())
+        mic_source, system_source = get_default_audio_routes()
+        self.mic = Track("mic", mic_source)
+        self.system = Track("sys", system_source)
         self.pending_count = 0
         self.pending_refresh_at = 0.0
         self.today = date.today()
@@ -275,6 +403,7 @@ class AudioRecorder:
         self._watch_journal()
         GLib.timeout_add_seconds(1, self._update_status)
         GLib.timeout_add_seconds(REMINDER_CHECK_SECONDS, self._check_reminders)
+        GLib.timeout_add_seconds(DEVICE_CHECK_SECONDS, self._check_audio_device_changes)
 
     @property
     def is_recording(self):
@@ -382,9 +511,12 @@ class AudioRecorder:
         if self.is_recording:
             return
 
+        mic_source, system_source = get_default_audio_routes()
+        self.mic.pulse_source = mic_source
+        self.system.pulse_source = system_source
+
         start = time.time()
         session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-        started_tracks = []
         try:
             for track in (self.mic, self.system):
                 track.recording = True
@@ -395,16 +527,9 @@ class AudioRecorder:
                 track.segment_timer = GLib.timeout_add_seconds(
                     SEGMENT_MINUTES * 60, track.rotate_segment
                 )
-                started_tracks.append(track)
         except Exception:
             logging.exception("Failed to start recording")
-            for track in started_tracks:
-                track.stop_segment()
-                if track.segment_timer:
-                    GLib.source_remove(track.segment_timer)
-                    track.segment_timer = None
-                track.recording = False
-                track.reset_session()
+            self._mark_recording_failed()
             raise
 
         self.toggle_item.set_label("Stop Recording")
@@ -414,6 +539,12 @@ class AudioRecorder:
             self._clear_recording_meeting()
             self._maybe_associate_current_recording(datetime.now())
         self._update_icon()
+
+    def _current_audio_routes(self):
+        nodes = _load_pipewire_nodes()
+        if nodes is None:
+            return None
+        return _resolve_default_audio_source(nodes), _resolve_default_monitor_source(nodes)
 
     def _stop_recording(self):
         if not self.is_recording:
@@ -429,6 +560,68 @@ class AudioRecorder:
         self.toggle_item.set_label("Start Recording")
         self._clear_recording_meeting()
         self._update_icon()
+
+    def _stop_tracks_for_rotation(self):
+        for track in (self.mic, self.system):
+            track.stop_segment()
+
+    def _mark_recording_failed(self):
+        for track in (self.mic, self.system):
+            track.stop_segment()
+            track.recording = False
+            if track.segment_timer:
+                GLib.source_remove(track.segment_timer)
+                track.segment_timer = None
+            track.reset_session()
+        self.toggle_item.set_label("Start Recording")
+        self._clear_recording_meeting()
+        self._update_icon()
+
+    def _rotate_recording_to_sources(self, mic_source, system_source):
+        logging.info(
+            "Audio device change detected; rotating recording "
+            "mic=%s->%s sys=%s->%s",
+            self.mic.pulse_source,
+            mic_source,
+            self.system.pulse_source,
+            system_source,
+        )
+        next_part = max(self.mic.next_part, self.system.next_part)
+        started_tracks = []
+        self._stop_tracks_for_rotation()
+        self.mic.pulse_source = mic_source
+        self.system.pulse_source = system_source
+        self.mic.next_part = next_part
+        self.system.next_part = next_part
+        try:
+            for track in (self.mic, self.system):
+                track.start_segment()
+                started_tracks.append(track)
+        except Exception:
+            logging.exception("Failed to rotate recording after audio device change")
+            for track in started_tracks:
+                track.stop_segment()
+            self._mark_recording_failed()
+            self.status_item.set_label("Recorder error after device change")
+            raise
+
+    def _check_audio_device_changes(self):
+        try:
+            if not self.is_recording:
+                return True
+            current_routes = self._current_audio_routes()
+            if current_routes is None:
+                return True
+            mic_source, system_source = current_routes
+            if (
+                mic_source == self.mic.pulse_source
+                and system_source == self.system.pulse_source
+            ):
+                return True
+            self._rotate_recording_to_sources(mic_source, system_source)
+        except Exception:
+            logging.exception("Failed during audio device change check")
+        return True
 
     def _prompt_yes_no(self, title, text, secondary):
         dialog = Gtk.MessageDialog(
