@@ -44,13 +44,17 @@ def load_local_model(model_key: str):
         print(f"Available: {', '.join(k for k, v in LOCAL_MODELS.items() if v.exists())}")
         sys.exit(1)
 
-    # 26B MoE needs hybrid CPU/GPU (won't fit in 8GB VRAM)
-    is_hybrid = model_path.stat().st_size > 10 * 1024**3
+    threshold_bytes = int(_cfg.summarize_hybrid_threshold_gb * 1024**3)
+    is_hybrid = model_path.stat().st_size > threshold_bytes
+    if _cfg.summarize_n_gpu_layers is not None:
+        n_gpu_layers = _cfg.summarize_n_gpu_layers
+    else:
+        n_gpu_layers = _cfg.summarize_hybrid_n_gpu_layers if is_hybrid else -1
 
-    print(f"Loading model: {model_path.name}")
+    print(f"Loading model: {model_path.name} (n_gpu_layers={n_gpu_layers})")
     return Llama(
         model_path=str(model_path),
-        n_gpu_layers=-1 if not is_hybrid else 10,
+        n_gpu_layers=n_gpu_layers,
         n_ctx=8192,
         flash_attn=not is_hybrid,
         verbose=False,

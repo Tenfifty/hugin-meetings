@@ -48,6 +48,16 @@ BACKCHANNEL_WORDS = {
 ANON_SPEAKER_RE = re.compile(r"^(?:speaker|SPEAKER)_(\d+)$")
 
 
+def _is_oom(exc: BaseException) -> bool:
+    """Detect CUDA OOM across the several exception types torch/cuBLAS raise."""
+    import torch
+
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    msg = str(exc).lower()
+    return isinstance(exc, RuntimeError) and "out of memory" in msg
+
+
 def is_silent(path: Path) -> bool:
     """Check if an audio file is effectively silent."""
     try:
@@ -676,16 +686,48 @@ def process_part(
     mic_result = None
     diarization_device = device
 
-    print(f"  Loading model: {MODEL}")
-    try:
-        model = whisperx.load_model(
+    def _load_whisper(dev: str):
+        return whisperx.load_model(
             MODEL,
-            device,
-            compute_type="float16" if device == "cuda" else "int8",
+            dev,
+            compute_type="float16" if dev == "cuda" else "int8",
         )
 
+    def _run_whisper(audio_part: Path):
+        nonlocal model, device, diarization_device
+        try:
+            return transcribe(audio_part, model, device)
+        except Exception as exc:
+            if not _is_oom(exc) or device != "cuda":
+                raise
+            print(f"    Whisper OOM on CUDA for {audio_part.name}; falling back to CPU/int8 (slow).")
+            try:
+                del model
+            except NameError:
+                pass
+            gc.collect()
+            torch.cuda.empty_cache()
+            device = "cpu"
+            diarization_device = "cpu"
+            model = _load_whisper(device)
+            return transcribe(audio_part, model, device)
+
+    print(f"  Loading model: {MODEL}")
+    try:
+        try:
+            model = _load_whisper(device)
+        except Exception as exc:
+            if not _is_oom(exc) or device != "cuda":
+                raise
+            print("    Whisper OOM loading on CUDA; falling back to CPU/int8 (slow).")
+            gc.collect()
+            torch.cuda.empty_cache()
+            device = "cpu"
+            diarization_device = "cpu"
+            model = _load_whisper(device)
+
         print(f"  Part p{part_index:02d}: transcribing mic {mic_part.name}")
-        mic_result = transcribe(mic_part, model, device)
+        mic_result = _run_whisper(mic_part)
         print(
             f"    {len(mic_result.get('segments', []))} segments, "
             f"language: {mic_result.get('language', '?')}"
@@ -696,7 +738,7 @@ def process_part(
                 print(f"  Part p{part_index:02d}: system audio is silent, skipping {sys_part.name}")
             else:
                 print(f"  Part p{part_index:02d}: transcribing sys {sys_part.name}")
-                sys_result = transcribe(sys_part, model, device)
+                sys_result = _run_whisper(sys_part)
                 print(f"    {len(sys_result.get('segments', []))} segments")
         else:
             print(f"  Part p{part_index:02d}: no matching sys file found")
@@ -725,10 +767,10 @@ def process_part(
                     diarizer_model,
                     hf_token,
                 )
-            except torch.OutOfMemoryError:
-                if diarization_device != "cuda" or diarizer_name != "nemo":
+            except Exception as exc:
+                if not _is_oom(exc) or diarization_device != "cuda":
                     raise
-                print("    NeMo diarization OOM on CUDA for mic, retrying with a fresh CPU diarizer...")
+                print(f"    {diarizer_name} diarization OOM on CUDA for mic, retrying with a fresh CPU diarizer...")
                 diarizer_model = None
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -756,10 +798,10 @@ def process_part(
                         diarizer_model,
                         hf_token,
                     )
-                except torch.OutOfMemoryError:
-                    if diarization_device != "cuda" or diarizer_name != "nemo":
+                except Exception as exc:
+                    if not _is_oom(exc) or diarization_device != "cuda":
                         raise
-                    print("    NeMo diarization OOM on CUDA, retrying with a fresh CPU diarizer...")
+                    print(f"    {diarizer_name} diarization OOM on CUDA, retrying with a fresh CPU diarizer...")
                     diarizer_model = None
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -783,11 +825,32 @@ def process_part(
             torch.cuda.empty_cache()
 
         if do_diarize and diarizer_name == "nemo" and hf_token and SPEAKERS_DIR.exists():
+            speaker_id_device = device
             print("  Loading pyannote embedding model for speaker naming...")
-            speaker_id_model = load_pyannote_embedding_model(hf_token, device)
-            mic_result = apply_enrolled_speaker_names(mic_part, mic_result, speaker_id_model, device)
+            speaker_id_model = load_pyannote_embedding_model(hf_token, speaker_id_device)
+
+            def _name_speakers(audio_path, result):
+                nonlocal speaker_id_model, speaker_id_device
+                try:
+                    return apply_enrolled_speaker_names(
+                        audio_path, result, speaker_id_model, speaker_id_device
+                    )
+                except Exception as exc:
+                    if not _is_oom(exc) or speaker_id_device != "cuda":
+                        raise
+                    print("    Speaker-naming OOM on CUDA; reloading embedding model on CPU.")
+                    speaker_id_model = None
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    speaker_id_device = "cpu"
+                    speaker_id_model = load_pyannote_embedding_model(hf_token, speaker_id_device)
+                    return apply_enrolled_speaker_names(
+                        audio_path, result, speaker_id_model, speaker_id_device
+                    )
+
+            mic_result = _name_speakers(mic_part, mic_result)
             if sys_result is not None and sys_part is not None:
-                sys_result = apply_enrolled_speaker_names(sys_part, sys_result, speaker_id_model, device)
+                sys_result = _name_speakers(sys_part, sys_result)
             speaker_id_model = None
             if device == "cuda":
                 gc.collect()

@@ -169,6 +169,14 @@ class MeetingsConfig:
     whisper_model: str = "large-v3"
     compute_type: str = "float16"
 
+    # Local llama.cpp summarization tuning. `summarize_n_gpu_layers`, if set,
+    # overrides the auto pick (-1 = all on GPU). Otherwise models larger than
+    # `summarize_hybrid_threshold_gb` load in hybrid mode with
+    # `summarize_hybrid_n_gpu_layers` layers on the GPU.
+    summarize_n_gpu_layers: int | None = None
+    summarize_hybrid_threshold_gb: float = 10.0
+    summarize_hybrid_n_gpu_layers: int = 10
+
     # Calendar (shared with other hugin-* tools; may live at top level)
     gws_bin: str = "gws"
     gws_config_dir: Path | None = None
@@ -246,6 +254,9 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
         state_dir=_path("state_dir") or MeetingsConfig().state_dir,
         whisper_model=meetings.get("whisper_model", "large-v3"),
         compute_type=meetings.get("compute_type", "float16"),
+        summarize_n_gpu_layers=meetings.get("summarize_n_gpu_layers"),
+        summarize_hybrid_threshold_gb=float(meetings.get("summarize_hybrid_threshold_gb", 10.0)),
+        summarize_hybrid_n_gpu_layers=int(meetings.get("summarize_hybrid_n_gpu_layers", 10)),
         gws_bin=meetings.get("gws_bin", merged.get("gws_bin", "gws")),
         gws_config_dir=_path("gws_config_dir") or (
             Path(merged["gws_config_dir"]).expanduser()

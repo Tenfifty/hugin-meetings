@@ -21,6 +21,14 @@ meetings:
   whisper_model: large-v3
   compute_type:  float16
 
+  # Local llama.cpp summarization. Leave unset for auto (all layers on GPU
+  # for models <= threshold, hybrid split above). Set summarize_n_gpu_layers
+  # explicitly to override — 0 forces pure CPU, any positive int caps GPU
+  # layers for low-VRAM setups.
+  # summarize_n_gpu_layers: 20
+  # summarize_hybrid_threshold_gb: 10.0
+  # summarize_hybrid_n_gpu_layers: 10
+
   # Prompt and summary formatting. Paths may be absolute or use ~.
   # summarize_prompt_path: ~/Documents/notes/config/hugin/summary_prompt.md
   # summary_model defaults to the provider's normal remote model unless set.
