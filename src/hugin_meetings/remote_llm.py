@@ -126,6 +126,22 @@ def _run_gemini(cfg: LLMConfig, model: str, prompt: str, effort: str | None, tim
     return result.stdout.strip()
 
 
+def _run_local_command(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
+    if not cfg.local_command:
+        raise RuntimeError("llm.local_command must be configured when llm.provider is local")
+
+    cwd = _clean_cwd(cfg)
+    model_value = "" if _uses_default_model(model) else model
+    effort_value = effort or ""
+    cmd = [
+        part.replace("{model}", model_value).replace("{effort}", effort_value)
+        for part in cfg.local_command
+    ]
+    result = _run_checked(cmd, prompt, cwd, timeout)
+    _raise_for_failure("local", result)
+    return result.stdout.strip()
+
+
 def run_prompt(
     cfg: LLMConfig,
     model: str,
@@ -139,4 +155,6 @@ def run_prompt(
         return _run_claude(cfg, model, prompt, effort, timeout)
     if cfg.provider == "gemini":
         return _run_gemini(cfg, model, prompt, effort, timeout)
+    if cfg.provider == "local":
+        return _run_local_command(cfg, model, prompt, effort, timeout)
     raise ValueError(f"Unsupported LLM provider: {cfg.provider}")

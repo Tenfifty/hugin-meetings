@@ -73,6 +73,28 @@ class RemoteLLMTests(unittest.TestCase):
         self.assertEqual(settings["context"]["discoveryMaxDirs"], 0)
         self.assertEqual(text, "ok from stdout")
 
+    def test_local_provider_runs_configured_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = LLMConfig(
+                provider="local",
+                clean_cwd=Path(tmp),
+                local_command=["fake-llm", "--model", "{model}", "--effort", "{effort}"],
+            )
+            with patch.object(remote_llm.subprocess, "run", return_value=Completed()) as run:
+                text = remote_llm.run_prompt(cfg, "gemma-local", "hello", effort="low")
+
+        cmd = run.call_args.args[0]
+        kwargs = run.call_args.kwargs
+        self.assertEqual(cmd, ["fake-llm", "--model", "gemma-local", "--effort", "low"])
+        self.assertEqual(kwargs["input"], "hello")
+        self.assertEqual(kwargs["cwd"], Path(tmp))
+        self.assertEqual(text, "ok from stdout")
+
+    def test_local_provider_requires_command(self) -> None:
+        cfg = LLMConfig(provider="local")
+        with self.assertRaisesRegex(RuntimeError, "local_command"):
+            remote_llm.run_prompt(cfg, DEFAULT_REMOTE_MODEL, "hello")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -59,6 +59,21 @@ class PromptConfigTests(unittest.TestCase):
         self.assertEqual(cfg.project_matcher.model, "default")
         self.assertEqual(cfg.project_matcher.effort, "low")
 
+    def test_local_command_provider_is_configurable(self) -> None:
+        cfg = _build(
+            {
+                "meetings": {
+                    "llm": {
+                        "provider": "local",
+                        "local_command": ["fake-llm", "--model", "{model}"],
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(cfg.llm.provider, "local")
+        self.assertEqual(cfg.llm.local_command, ["fake-llm", "--model", "{model}"])
+
 
 class ProjectMatcherPromptTests(unittest.TestCase):
     def setUp(self) -> None:

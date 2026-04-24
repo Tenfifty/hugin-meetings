@@ -37,11 +37,13 @@ meetings:
   summary_header: "## Meeting Summary"
   # personal_section_header: "### For Me"
 
-  # Remote LLM provider for non-local models. Supported: codex, claude, gemini.
+  # LLM provider for non-local models. Supported: codex, claude, gemini, local.
   # Claude runs from clean_cwd by default to avoid repo-local CLAUDE.md discovery
   # while still allowing your normal Claude Code login to work.
   # Gemini runs from a clean cwd and points context.fileName at a missing file,
   # since the CLI has no exact --bare equivalent.
+  # The local provider runs one command per request. The prompt is sent on stdin
+  # and stdout is used as the response, so GPU memory is released when it exits.
   llm:
     provider: codex
     # clean_cwd: /tmp/hugin-meetings-llm-clean
@@ -50,6 +52,23 @@ meetings:
     # gemini_bin: gemini
     # claude_args: []               # e.g. ["--effort", "medium"]
     # gemini_disable_context: true
+    # Example local llama.cpp command. Adjust the binary, model path, and flags
+    # for your installation. Use provider: local to enable it.
+    # local_command:
+    #   - bash
+    #   - -lc
+    #   - |
+    #     prompt_file=$(mktemp)
+    #     cat > "$prompt_file"
+    #     llama-cli \
+    #       -m "$HOME/.hugin_audio/models/gemma-4.gguf" \
+    #       -f "$prompt_file" \
+    #       -n 2048 \
+    #       --temp 0.3 \
+    #       --no-display-prompt
+    #     status=$?
+    #     rm -f "$prompt_file"
+    #     exit "$status"
 
   # Google Workspace CLI used to fetch calendar events.
   # gws_bin: gws                    # binary on PATH

@@ -67,16 +67,21 @@ use your own versions. Matcher templates can use `{{candidate_names}}`,
 `{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, and
 `{{internal_rules}}`.
 
-Remote models use `meetings.llm.provider`, which can be `codex`, `claude`, or
-`gemini`. The default is `codex`. Claude Code runs from a clean working
-directory so repo-local `CLAUDE.md` files are not discovered while normal
-Claude Code login still works. Gemini also runs from a clean working directory,
-with context discovery pointed at a missing file.
+Remote and local command models use `meetings.llm.provider`, which can be
+`codex`, `claude`, `gemini`, or `local`. The default is `codex`. Claude Code
+runs from a clean working directory so repo-local `CLAUDE.md` files are not
+discovered while normal Claude Code login still works. Gemini also runs from a
+clean working directory, with context discovery pointed at a missing file.
 
 Set `summary_model` or `project_matcher.model` to `default` to let the provider
 CLI choose its configured model. Summaries default to `summary_effort: high`;
 project matching defaults to `project_matcher.effort: low`. Effort is applied
 for Codex and Claude, and ignored for Gemini.
+
+For local one-shot inference, use `meetings.llm.provider: local` and set
+`meetings.llm.local_command`. The prompt is written to stdin and stdout is used
+as the model response, which works well for llama.cpp-style commands that should
+exit and release GPU memory after each request.
 
 ## CLI
 

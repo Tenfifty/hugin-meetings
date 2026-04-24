@@ -19,7 +19,7 @@ from typing import Any
 
 import yaml
 
-LLM_PROVIDERS = {"codex", "claude", "gemini"}
+LLM_PROVIDERS = {"codex", "claude", "gemini", "local"}
 DEFAULT_REMOTE_MODEL = "default"
 DEFAULT_SUMMARY_EFFORT = "high"
 DEFAULT_PROJECT_MATCHER_EFFORT = "low"
@@ -86,6 +86,9 @@ class LLMConfig:
     # Claude runs from clean_cwd by default so repo-local CLAUDE.md is not discovered.
     claude_args: list[str] = field(default_factory=list)
     gemini_args: list[str] = field(default_factory=list)
+    # Local command provider: receives prompt on stdin and returns text on stdout.
+    # Arguments may contain {model} and {effort} placeholders.
+    local_command: list[str] = field(default_factory=list)
     # Gemini has no exact --bare equivalent. Use a clean cwd plus a workspace
     # setting that points context discovery at an intentionally absent file.
     gemini_disable_context: bool = True
@@ -106,6 +109,7 @@ class LLMConfig:
             codex_args=_string_list(data, "codex_args", []),
             claude_args=_string_list(data, "claude_args", []),
             gemini_args=_string_list(data, "gemini_args", []),
+            local_command=_string_list(data, "local_command", []),
             gemini_disable_context=data.get("gemini_disable_context", True),
             gemini_context_file_name=data.get(
                 "gemini_context_file_name",
