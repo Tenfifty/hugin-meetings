@@ -108,7 +108,11 @@ the Gtk layer; the core engine (`hugin_meetings.*`) stays the same.
 
 Key integration points a frontend needs:
 
-- Spawn `ffmpeg` to write to `cfg.raw_audio_dir / {mic|sys}-{session_id}-p{NN}.opus`
+- Use `hugin_meetings.recording` to write `{mic|sys}-{session_id}-p{NN}.opus`
+  into `cfg.raw_audio_dir`
+- Use `hugin_meetings.audio_routes` on Linux/PipeWire to discover mic/system
+  audio routes, or provide an OS-specific route provider
+- Use `hugin_meetings.schedule` for journal meeting parsing and reminder state
 - Call `hugin-meet-transcribe <session-id>` when done
 - Read pipeline state via `hugin_meetings.pipeline.scan_raw_audio_sessions()`
 

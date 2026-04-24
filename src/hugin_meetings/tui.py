@@ -10,28 +10,17 @@ import importlib.util
 import io
 import os
 import subprocess
-import sys
 import textwrap
 from datetime import datetime
 from pathlib import Path
 
 from . import pipeline as audio_pipeline
+from .cli_utils import resolve_sibling_bin
 from .config import load_config
 
 _cfg = load_config()
 STATE_DIR = _cfg.state_dir
 LOG_DIR = STATE_DIR / "logs" / "audio-tui"
-
-
-def _resolve_sibling_bin(name: str) -> str:
-    """Resolve a hugin-meet-* helper next to the current interpreter.
-
-    Guarantees that subprocesses stay in the same venv as the TUI, even when
-    the caller is a login shell that rewrites PATH (e.g. gnome-terminal +
-    zsh -lic from the tray).
-    """
-    candidate = Path(sys.executable).parent / name
-    return str(candidate) if candidate.exists() else name
 
 
 def load_module(module_name: str, path: Path):
@@ -185,7 +174,7 @@ class AudioTui:
             commands.append(
                 (
                     f"Transcribing {rec.timestamp} ({part_desc})",
-                    [_resolve_sibling_bin("hugin-meet-transcribe"), rec.timestamp],
+                    [resolve_sibling_bin("hugin-meet-transcribe"), rec.timestamp],
                 )
             )
             rec = self.find_recording(rec.timestamp) or rec
@@ -195,14 +184,14 @@ class AudioTui:
             commands.append(
                 (
                     f"Matching calendar for {transcript_arg}",
-                    [_resolve_sibling_bin("hugin-meet-match-calendar"), transcript_arg],
+                    [resolve_sibling_bin("hugin-meet-match-calendar"), transcript_arg],
                 )
             )
         if not rec.has_summary:
             commands.append(
                 (
                     f"Summarizing {transcript_arg}",
-                    [_resolve_sibling_bin("hugin-meet-summarize"), "--model", self.summary_model, transcript_arg],
+                    [resolve_sibling_bin("hugin-meet-summarize"), "--model", self.summary_model, transcript_arg],
                 )
             )
         return commands
