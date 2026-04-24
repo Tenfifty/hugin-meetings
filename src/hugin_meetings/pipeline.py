@@ -6,8 +6,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
-import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +13,7 @@ from typing import Literal
 
 from . import summarize as summarize_tool
 from .config import load_config
+from .remote_llm import run_prompt
 
 _cfg = load_config()
 
@@ -33,9 +32,6 @@ TRANSCRIPT_JSON_DIR = _cfg.transcript_json_dir
 # the user-facing concept is "project" (see config.project_matcher).
 CUSTOMERS_DIR = _cfg.project_matcher.projects_dir
 INTERNAL_PROJECT = _cfg.project_matcher.internal_project
-
-CODEX_CLEAN_CWD = Path(tempfile.gettempdir()) / "codex-clean"
-
 
 def _relative_or_absolute(path: Path) -> str:
     """Return path relative to vault if possible, else absolute."""
@@ -757,38 +753,8 @@ def extract_json_object(text: str) -> dict:
     raise ValueError("No JSON object found in model output")
 
 
-def run_codex_json_prompt(model: str, prompt: str) -> dict:
-    CODEX_CLEAN_CWD.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as out:
-        out_path = out.name
-
-    try:
-        result = subprocess.run(
-            [
-                "codex",
-                "exec",
-                "-m",
-                model,
-                "-C",
-                str(CODEX_CLEAN_CWD),
-                "-c",
-                "model_reasoning_effort=medium",
-                "--skip-git-repo-check",
-                "--ephemeral",
-                "-o",
-                out_path,
-                "-",
-            ],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or "codex exec failed")
-        return extract_json_object(Path(out_path).read_text())
-    finally:
-        Path(out_path).unlink(missing_ok=True)
+def run_remote_json_prompt(model: str, prompt: str) -> dict:
+    return extract_json_object(run_prompt(_cfg.llm, model, prompt))
 
 
 def run_local_json_prompt(model: str, prompt: str) -> dict:
@@ -866,10 +832,10 @@ def suggest_customer_link(
     model: str = DEFAULT_CUSTOMER_MODEL,
 ) -> CustomerDecision:
     prompt, candidates = build_customer_prompt(summary_path, model)
-    if model in summarize_tool.CODEX_MODELS:
-        payload = run_codex_json_prompt(model, prompt)
-    else:
+    if model in summarize_tool.LOCAL_MODELS:
         payload = run_local_json_prompt(model, prompt)
+    else:
+        payload = run_remote_json_prompt(model, prompt)
 
     action = str(payload.get("action", "no_match")).strip()
     if action not in {"link_existing", "suggest_new", "no_match"}:

@@ -40,6 +40,23 @@ class PromptConfigTests(unittest.TestCase):
         self.assertEqual(cfg.project_matcher.json_system_prompt, "JSON only, please.")
         self.assertEqual(cfg.project_matcher.inactive_dir_names, ["archive"])
 
+    def test_remote_llm_provider_is_configurable(self) -> None:
+        cfg = _build(
+            {
+                "meetings": {
+                    "llm": {
+                        "provider": "claude",
+                        "claude_args": ["--effort", "medium"],
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(cfg.llm.provider, "claude")
+        self.assertEqual(cfg.llm.claude_args, ["--effort", "medium"])
+        self.assertEqual(cfg.summary_model, "sonnet")
+        self.assertEqual(cfg.project_matcher.model, "sonnet")
+
 
 class ProjectMatcherPromptTests(unittest.TestCase):
     def setUp(self) -> None:

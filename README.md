@@ -16,7 +16,7 @@ widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
    and attaches metadata (attendees, title, time, location) to the
    transcript.
 4. **Summarize** — generates a structured meeting summary via a local
-   LLM (llama.cpp) or a remote model (via `codex exec`).
+   LLM (llama.cpp) or a remote model through Codex, Claude Code, or Gemini CLI.
 5. **Match project/customer** — optionally links the summary to an
    existing project/customer note in your vault.
 6. **Enroll speakers** — learn speaker embeddings over time so future
@@ -38,7 +38,7 @@ pip install -e ".[summarize]"
 System dependencies (not pip-installable):
 
 - `ffmpeg` (audio conversion)
-- `codex` CLI if you want to summarize via remote models
+- `codex`, `claude`, or `gemini` CLI if you want to summarize via remote models
 - `gws` (Google Workspace CLI) if you want calendar matching
 
 For the optional GNOME tray widget, install `frontends/gnome/` separately:
@@ -66,6 +66,12 @@ templates under `src/hugin_meetings/prompts/`. Set
 use your own versions. Matcher templates can use `{{candidate_names}}`,
 `{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, and
 `{{internal_rules}}`.
+
+Remote models use `meetings.llm.provider`, which can be `codex`, `claude`, or
+`gemini`. The default is `codex`. Claude Code runs from a clean working
+directory so repo-local `CLAUDE.md` files are not discovered while normal
+Claude Code login still works. Gemini also runs from a clean working directory,
+with context discovery pointed at a missing file.
 
 ## CLI
 

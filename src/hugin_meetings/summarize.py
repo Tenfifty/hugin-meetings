@@ -9,10 +9,10 @@ Usage:
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
 
 from .config import load_config
+from .remote_llm import run_prompt
 _cfg = load_config()
 
 TRANSCRIPT_DIR = _cfg.transcripts_dir
@@ -22,10 +22,7 @@ LOCAL_MODELS = {
     "small": MODELS_DIR / "gemma-4-E4B-it-Q4_K_M.gguf",
     "large": MODELS_DIR / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
 }
-# codex exec models
-CODEX_MODELS = {"gpt-5.4", "gpt-5.4-mini"}
-DEFAULT_MODEL = "gpt-5.4"
-CODEX_CLEAN_CWD = Path(tempfile.gettempdir()) / "codex-clean"
+DEFAULT_MODEL = _cfg.summary_model
 
 _DEFAULT_PROMPT_PATH = Path(__file__).parent / "prompts" / "summary_default.md"
 
@@ -96,42 +93,15 @@ def summarize_local(model, transcript_text: str) -> str:
     return clean_summary_text(response["choices"][0]["message"]["content"])
 
 
-def summarize_codex(codex_model: str, transcript_text: str) -> str:
-    import subprocess
-
+def summarize_remote(model_id: str, transcript_text: str) -> str:
     prompt = f"{SYSTEM_PROMPT}\n\nTranscript:\n\n{transcript_text}"
 
-    model_id = codex_model
-
-    CODEX_CLEAN_CWD.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as out:
-        out_path = out.name
-
-    print(f"  Running codex exec with model: {model_id}")
-    result = subprocess.run(
-        [
-            "codex", "exec",
-            "-m", model_id,
-            "-C", str(CODEX_CLEAN_CWD),
-            "-c", "model_reasoning_effort=medium",
-            "--skip-git-repo-check",
-            "--ephemeral",
-            "-o", out_path,
-            "-",
-        ],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-
-    if result.returncode != 0:
-        print(f"  codex exec failed: {result.stderr[:500]}", file=sys.stderr)
+    print(f"  Running {_cfg.llm.provider} with model: {model_id}")
+    try:
+        return run_prompt(_cfg.llm, model_id, prompt)
+    except RuntimeError as exc:
+        print(f"  {_cfg.llm.provider} failed: {str(exc)[:500]}", file=sys.stderr)
         return ""
-
-    text = Path(out_path).read_text()
-    Path(out_path).unlink(missing_ok=True)
-    return text.strip()
 
 
 def resolve_transcript(name: str | None) -> Path:
@@ -167,16 +137,16 @@ def process_transcript(model_key: str, model, md_path: Path):
 
     transcript_text = md_path.read_text()
 
-    if model_key not in CODEX_MODELS:
+    if model_key in LOCAL_MODELS:
         est_tokens = len(transcript_text) / 3.5
         if est_tokens > 5500:
             print(f"  Warning: transcript is ~{int(est_tokens)} tokens, may be truncated")
 
     print(f"  Summarizing: {md_path.name}")
-    if model_key in CODEX_MODELS:
-        summary = summarize_codex(model_key, transcript_text)
-    else:
+    if model_key in LOCAL_MODELS:
         summary = summarize_local(model, transcript_text)
+    else:
+        summary = summarize_remote(model_key, transcript_text)
 
     out_path.write_text(summary + "\n")
     print(f"  Wrote {out_path}")
@@ -193,16 +163,21 @@ def find_unsummarized() -> list[Path]:
 
 
 def main():
-    all_models = list(LOCAL_MODELS.keys()) + sorted(CODEX_MODELS)
     parser = argparse.ArgumentParser(description="Summarize meeting transcripts")
     parser.add_argument("transcript", nargs="?", help="Transcript .md file (default: latest)")
     parser.add_argument("--all", action="store_true", help="Summarize all unsummarized transcripts")
-    parser.add_argument("--model", choices=all_models, default=DEFAULT_MODEL,
-                        help=f"Model to use (default: {DEFAULT_MODEL})")
+    parser.add_argument(
+        "--model",
+        default=DEFAULT_MODEL,
+        help=(
+            f"Model to use (default: {DEFAULT_MODEL}; use small/large for local models, "
+            "otherwise the configured remote provider is used)"
+        ),
+    )
     args = parser.parse_args()
 
     model = None
-    if args.model not in CODEX_MODELS:
+    if args.model in LOCAL_MODELS:
         model = load_local_model(args.model)
 
     if args.all:

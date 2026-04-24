@@ -23,8 +23,24 @@ meetings:
 
   # Prompt and summary formatting. Paths may be absolute or use ~.
   # summarize_prompt_path: ~/Documents/notes/config/hugin/summary_prompt.md
+  # summary_model defaults to the provider's normal remote model unless set.
+  # summary_model: gpt-5.4
   summary_header: "## Meeting Summary"
   # personal_section_header: "### For Me"
+
+  # Remote LLM provider for non-local models. Supported: codex, claude, gemini.
+  # Claude runs from clean_cwd by default to avoid repo-local CLAUDE.md discovery
+  # while still allowing your normal Claude Code login to work.
+  # Gemini runs from a clean cwd and points context.fileName at a missing file,
+  # since the CLI has no exact --bare equivalent.
+  llm:
+    provider: codex
+    # clean_cwd: /tmp/hugin-meetings-llm-clean
+    # codex_bin: codex
+    # claude_bin: claude
+    # gemini_bin: gemini
+    # claude_args: []               # e.g. ["--effort", "medium"]
+    # gemini_disable_context: true
 
   # Google Workspace CLI used to fetch calendar events.
   # gws_bin: gws                    # binary on PATH

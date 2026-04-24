@@ -11,12 +11,25 @@ Individual values can also be overridden by env vars prefixed with HUGIN_MEET_.
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+LLM_PROVIDERS = {"codex", "claude", "gemini"}
+DEFAULT_SUMMARY_MODELS = {
+    "codex": "gpt-5.4",
+    "claude": "sonnet",
+    "gemini": "gemini-2.5-flash",
+}
+DEFAULT_PROJECT_MATCHER_MODELS = {
+    "codex": "gpt-5.4-mini",
+    "claude": "sonnet",
+    "gemini": "gemini-2.5-flash",
+}
 
 
 def _config_dir() -> Path:
@@ -56,6 +69,58 @@ def _expand(value: Any) -> Any:
     return value
 
 
+def _string_list(data: dict[str, Any], key: str, default: list[str]) -> list[str]:
+    value = data.get(key, default)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{key} must be a list of strings")
+    return value
+
+
+@dataclass
+class LLMConfig:
+    """Remote LLM command settings."""
+
+    provider: str = "codex"
+    clean_cwd: Path = field(
+        default_factory=lambda: Path(tempfile.gettempdir()) / "hugin-meetings-llm-clean"
+    )
+    codex_bin: str = "codex"
+    claude_bin: str = "claude"
+    gemini_bin: str = "gemini"
+    codex_args: list[str] = field(default_factory=list)
+    # Claude runs from clean_cwd by default so repo-local CLAUDE.md is not discovered.
+    claude_args: list[str] = field(default_factory=list)
+    gemini_args: list[str] = field(default_factory=list)
+    # Gemini has no exact --bare equivalent. Use a clean cwd plus a workspace
+    # setting that points context discovery at an intentionally absent file.
+    gemini_disable_context: bool = True
+    gemini_context_file_name: str = ".hugin-meetings-no-gemini-context.md"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "LLMConfig":
+        provider = str(data.get("provider", "codex")).lower()
+        if provider not in LLM_PROVIDERS:
+            raise ValueError(f"llm.provider must be one of: {', '.join(sorted(LLM_PROVIDERS))}")
+        clean_cwd = data.get("clean_cwd")
+        return cls(
+            provider=provider,
+            clean_cwd=Path(clean_cwd).expanduser() if clean_cwd else cls().clean_cwd,
+            codex_bin=data.get("codex_bin", "codex"),
+            claude_bin=data.get("claude_bin", "claude"),
+            gemini_bin=data.get("gemini_bin", "gemini"),
+            codex_args=_string_list(data, "codex_args", []),
+            claude_args=_string_list(data, "claude_args", []),
+            gemini_args=_string_list(data, "gemini_args", []),
+            gemini_disable_context=data.get("gemini_disable_context", True),
+            gemini_context_file_name=data.get(
+                "gemini_context_file_name",
+                ".hugin-meetings-no-gemini-context.md",
+            ),
+        )
+
+
 @dataclass
 class ProjectMatcherConfig:
     """Matches meetings to project/customer notes in a directory.
@@ -73,13 +138,13 @@ class ProjectMatcherConfig:
     inactive_dir_names: list[str] = field(default_factory=lambda: ["inactive", "inaktiva"])
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ProjectMatcherConfig":
+    def from_dict(cls, data: dict[str, Any], provider: str = "codex") -> "ProjectMatcherConfig":
         projects_dir = data.get("projects_dir")
         prompt_path = data.get("prompt_path")
         return cls(
             projects_dir=Path(projects_dir).expanduser() if projects_dir else None,
             internal_project=data.get("internal_project", ""),
-            model=data.get("model", "gpt-5.4-mini"),
+            model=data.get("model", DEFAULT_PROJECT_MATCHER_MODELS[provider]),
             prompt_path=Path(prompt_path).expanduser() if prompt_path else None,
             json_system_prompt=data.get("json_system_prompt", "Return only valid JSON."),
             inactive_dir_names=data.get("inactive_dir_names", ["inactive", "inaktiva"]),
@@ -113,6 +178,10 @@ class MeetingsConfig:
 
     # Project/customer matching
     project_matcher: ProjectMatcherConfig = field(default_factory=ProjectMatcherConfig)
+
+    # Remote LLM provider used for non-local models.
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    summary_model: str = "gpt-5.4"
 
     # Stopwords for fuzzy matching (lang-specific)
     stopwords: list[str] = field(default_factory=list)
@@ -157,6 +226,10 @@ class MeetingsConfig:
 def _build(merged: dict[str, Any]) -> MeetingsConfig:
     merged = _expand(merged)
     meetings = merged.get("meetings", {}) if "meetings" in merged else merged
+    llm_data = dict(meetings.get("llm", {}))
+    if meetings.get("llm_provider"):
+        llm_data["provider"] = meetings["llm_provider"]
+    llm = LLMConfig.from_dict(llm_data)
 
     def _path(key: str, default: Path | None = None) -> Path | None:
         value = meetings.get(key)
@@ -182,7 +255,12 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
             Path(merged["journal_path"]).expanduser()
             if merged.get("journal_path") else None
         ),
-        project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
+        project_matcher=ProjectMatcherConfig.from_dict(
+            meetings.get("project_matcher", {}),
+            llm.provider,
+        ),
+        llm=llm,
+        summary_model=meetings.get("summary_model", DEFAULT_SUMMARY_MODELS[llm.provider]),
         stopwords=meetings.get("stopwords", []),
         summarize_prompt_path=_path("summarize_prompt_path"),
         summary_header=meetings.get("summary_header", "## Meeting Summary"),

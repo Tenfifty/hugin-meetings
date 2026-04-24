@@ -657,14 +657,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hugin audio pipeline TUI")
     parser.add_argument(
         "--summary-model",
-        default="gpt-5.4",
-        choices=list(audio_pipeline.summarize_tool.LOCAL_MODELS.keys()) + sorted(audio_pipeline.summarize_tool.CODEX_MODELS),
+        default=audio_pipeline.summarize_tool.DEFAULT_MODEL,
         help="Model for summary generation when the pipeline needs summarization.",
     )
     parser.add_argument(
         "--customer-model",
         default=audio_pipeline.DEFAULT_CUSTOMER_MODEL,
-        choices=list(audio_pipeline.summarize_tool.LOCAL_MODELS.keys()) + sorted(audio_pipeline.summarize_tool.CODEX_MODELS),
         help="Model for customer-link suggestion.",
     )
     return parser.parse_args()
