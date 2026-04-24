@@ -31,8 +31,9 @@ meetings:
 
   # Prompt and summary formatting. Paths may be absolute or use ~.
   # summarize_prompt_path: ~/Documents/notes/config/hugin/summary_prompt.md
-  # summary_model defaults to the provider's normal remote model unless set.
-  # summary_model: gpt-5.4
+  # "default" omits provider-specific model flags and lets the CLI choose.
+  summary_model: default
+  summary_effort: high              # codex/claude only; ignored by gemini
   summary_header: "## Meeting Summary"
   # personal_section_header: "### For Me"
 
@@ -61,7 +62,8 @@ meetings:
     # Note representing your own organization — gets priority in matching.
     # For the author this was "Tenfifty".
     internal_project: ""
-    model: gpt-5.4-mini
+    model: default
+    effort: low                     # codex/claude only; ignored by gemini
     # prompt_path: ~/Documents/notes/config/hugin/project_matcher_prompt.md
     json_system_prompt: "Return only valid JSON."
     inactive_dir_names:

@@ -46,16 +46,18 @@ class PromptConfigTests(unittest.TestCase):
                 "meetings": {
                     "llm": {
                         "provider": "claude",
-                        "claude_args": ["--effort", "medium"],
+                        "claude_args": ["--verbose"],
                     }
                 }
             }
         )
 
         self.assertEqual(cfg.llm.provider, "claude")
-        self.assertEqual(cfg.llm.claude_args, ["--effort", "medium"])
-        self.assertEqual(cfg.summary_model, "sonnet")
-        self.assertEqual(cfg.project_matcher.model, "sonnet")
+        self.assertEqual(cfg.llm.claude_args, ["--verbose"])
+        self.assertEqual(cfg.summary_model, "default")
+        self.assertEqual(cfg.summary_effort, "high")
+        self.assertEqual(cfg.project_matcher.model, "default")
+        self.assertEqual(cfg.project_matcher.effort, "low")
 
 
 class ProjectMatcherPromptTests(unittest.TestCase):

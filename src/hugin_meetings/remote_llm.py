@@ -7,7 +7,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .config import LLMConfig
+from .config import DEFAULT_REMOTE_MODEL, LLMConfig
+
+
+def _uses_default_model(model: str | None) -> bool:
+    return not model or model == DEFAULT_REMOTE_MODEL
 
 
 def _clean_cwd(cfg: LLMConfig) -> Path:
@@ -33,7 +37,7 @@ def _raise_for_failure(provider: str, result: subprocess.CompletedProcess[str]) 
     raise RuntimeError(detail or f"{provider} prompt failed")
 
 
-def _run_codex(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
+def _run_codex(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
     cwd = _clean_cwd(cfg)
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as out:
         out_path = Path(out.name)
@@ -42,19 +46,16 @@ def _run_codex(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
         cmd = [
             cfg.codex_bin,
             "exec",
-            "-m",
-            model,
             "-C",
             str(cwd),
-            "-c",
-            "model_reasoning_effort=medium",
             "--skip-git-repo-check",
             "--ephemeral",
-            *cfg.codex_args,
-            "-o",
-            str(out_path),
-            "-",
         ]
+        if not _uses_default_model(model):
+            cmd.extend(["-m", model])
+        if effort:
+            cmd.extend(["-c", f"model_reasoning_effort={effort}"])
+        cmd.extend([*cfg.codex_args, "-o", str(out_path), "-"])
         result = _run_checked(cmd, prompt, cwd, timeout)
         _raise_for_failure("codex", result)
         return out_path.read_text(encoding="utf-8").strip()
@@ -62,20 +63,22 @@ def _run_codex(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
         out_path.unlink(missing_ok=True)
 
 
-def _run_claude(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
+def _run_claude(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
     cwd = _clean_cwd(cfg)
     cmd = [
         cfg.claude_bin,
         *cfg.claude_args,
         "--print",
-        "--model",
-        model,
         "--output-format",
         "text",
         "--no-session-persistence",
         "--tools",
         "",
     ]
+    if not _uses_default_model(model):
+        cmd.extend(["--model", model])
+    if effort:
+        cmd.extend(["--effort", effort])
     result = _run_checked(cmd, prompt, cwd, timeout)
     _raise_for_failure("claude", result)
     return result.stdout.strip()
@@ -104,12 +107,10 @@ def _prepare_gemini_cwd(cfg: LLMConfig) -> Path:
     return cwd
 
 
-def _run_gemini(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
+def _run_gemini(cfg: LLMConfig, model: str, prompt: str, effort: str | None, timeout: int) -> str:
     cwd = _prepare_gemini_cwd(cfg)
     cmd = [
         cfg.gemini_bin,
-        "--model",
-        model,
         "--prompt",
         "",
         "--output-format",
@@ -118,16 +119,24 @@ def _run_gemini(cfg: LLMConfig, model: str, prompt: str, timeout: int) -> str:
         "--accept-raw-output-risk",
         *cfg.gemini_args,
     ]
+    if not _uses_default_model(model):
+        cmd[1:1] = ["--model", model]
     result = _run_checked(cmd, prompt, cwd, timeout)
     _raise_for_failure("gemini", result)
     return result.stdout.strip()
 
 
-def run_prompt(cfg: LLMConfig, model: str, prompt: str, timeout: int = 300) -> str:
+def run_prompt(
+    cfg: LLMConfig,
+    model: str,
+    prompt: str,
+    effort: str | None = None,
+    timeout: int = 300,
+) -> str:
     if cfg.provider == "codex":
-        return _run_codex(cfg, model, prompt, timeout)
+        return _run_codex(cfg, model, prompt, effort, timeout)
     if cfg.provider == "claude":
-        return _run_claude(cfg, model, prompt, timeout)
+        return _run_claude(cfg, model, prompt, effort, timeout)
     if cfg.provider == "gemini":
-        return _run_gemini(cfg, model, prompt, timeout)
+        return _run_gemini(cfg, model, prompt, effort, timeout)
     raise ValueError(f"Unsupported LLM provider: {cfg.provider}")

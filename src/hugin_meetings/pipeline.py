@@ -69,6 +69,7 @@ CustomerStatus = Literal["linked", "suggested_new", "no_match"]
 Confidence = Literal["high", "medium", "low"]
 
 DEFAULT_CUSTOMER_MODEL = _cfg.project_matcher.model
+DEFAULT_CUSTOMER_EFFORT = _cfg.project_matcher.effort
 CUSTOMER_JSON_SYSTEM_PROMPT = _cfg.project_matcher.json_system_prompt
 INACTIVE_DIR_NAMES = set(_cfg.project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
@@ -753,8 +754,8 @@ def extract_json_object(text: str) -> dict:
     raise ValueError("No JSON object found in model output")
 
 
-def run_remote_json_prompt(model: str, prompt: str) -> dict:
-    return extract_json_object(run_prompt(_cfg.llm, model, prompt))
+def run_remote_json_prompt(model: str, prompt: str, effort: str | None = None) -> dict:
+    return extract_json_object(run_prompt(_cfg.llm, model, prompt, effort=effort))
 
 
 def run_local_json_prompt(model: str, prompt: str) -> dict:
@@ -830,12 +831,13 @@ def materialize_verified_customer_state(state: CustomerState) -> CustomerState:
 def suggest_customer_link(
     summary_path: Path,
     model: str = DEFAULT_CUSTOMER_MODEL,
+    effort: str = DEFAULT_CUSTOMER_EFFORT,
 ) -> CustomerDecision:
     prompt, candidates = build_customer_prompt(summary_path, model)
     if model in summarize_tool.LOCAL_MODELS:
         payload = run_local_json_prompt(model, prompt)
     else:
-        payload = run_remote_json_prompt(model, prompt)
+        payload = run_remote_json_prompt(model, prompt, effort=effort)
 
     action = str(payload.get("action", "no_match")).strip()
     if action not in {"link_existing", "suggest_new", "no_match"}:

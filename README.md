@@ -73,6 +73,11 @@ directory so repo-local `CLAUDE.md` files are not discovered while normal
 Claude Code login still works. Gemini also runs from a clean working directory,
 with context discovery pointed at a missing file.
 
+Set `summary_model` or `project_matcher.model` to `default` to let the provider
+CLI choose its configured model. Summaries default to `summary_effort: high`;
+project matching defaults to `project_matcher.effort: low`. Effort is applied
+for Codex and Claude, and ignored for Gemini.
+
 ## CLI
 
 After `pip install -e .`:

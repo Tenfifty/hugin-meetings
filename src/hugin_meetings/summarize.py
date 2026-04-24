@@ -102,7 +102,7 @@ def summarize_remote(model_id: str, transcript_text: str) -> str:
 
     print(f"  Running {_cfg.llm.provider} with model: {model_id}")
     try:
-        return run_prompt(_cfg.llm, model_id, prompt)
+        return run_prompt(_cfg.llm, model_id, prompt, effort=_cfg.summary_effort)
     except RuntimeError as exc:
         print(f"  {_cfg.llm.provider} failed: {str(exc)[:500]}", file=sys.stderr)
         return ""

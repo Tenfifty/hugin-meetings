@@ -20,16 +20,9 @@ from typing import Any
 import yaml
 
 LLM_PROVIDERS = {"codex", "claude", "gemini"}
-DEFAULT_SUMMARY_MODELS = {
-    "codex": "gpt-5.4",
-    "claude": "sonnet",
-    "gemini": "gemini-2.5-flash",
-}
-DEFAULT_PROJECT_MATCHER_MODELS = {
-    "codex": "gpt-5.4-mini",
-    "claude": "sonnet",
-    "gemini": "gemini-2.5-flash",
-}
+DEFAULT_REMOTE_MODEL = "default"
+DEFAULT_SUMMARY_EFFORT = "high"
+DEFAULT_PROJECT_MATCHER_EFFORT = "low"
 
 
 def _config_dir() -> Path:
@@ -132,19 +125,21 @@ class ProjectMatcherConfig:
 
     projects_dir: Path | None = None
     internal_project: str = ""
-    model: str = "gpt-5.4-mini"
+    model: str = DEFAULT_REMOTE_MODEL
+    effort: str = DEFAULT_PROJECT_MATCHER_EFFORT
     prompt_path: Path | None = None
     json_system_prompt: str = "Return only valid JSON."
     inactive_dir_names: list[str] = field(default_factory=lambda: ["inactive", "inaktiva"])
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], provider: str = "codex") -> "ProjectMatcherConfig":
+    def from_dict(cls, data: dict[str, Any]) -> "ProjectMatcherConfig":
         projects_dir = data.get("projects_dir")
         prompt_path = data.get("prompt_path")
         return cls(
             projects_dir=Path(projects_dir).expanduser() if projects_dir else None,
             internal_project=data.get("internal_project", ""),
-            model=data.get("model", DEFAULT_PROJECT_MATCHER_MODELS[provider]),
+            model=data.get("model", DEFAULT_REMOTE_MODEL),
+            effort=data.get("effort", DEFAULT_PROJECT_MATCHER_EFFORT),
             prompt_path=Path(prompt_path).expanduser() if prompt_path else None,
             json_system_prompt=data.get("json_system_prompt", "Return only valid JSON."),
             inactive_dir_names=data.get("inactive_dir_names", ["inactive", "inaktiva"]),
@@ -189,7 +184,8 @@ class MeetingsConfig:
 
     # Remote LLM provider used for non-local models.
     llm: LLMConfig = field(default_factory=LLMConfig)
-    summary_model: str = "gpt-5.4"
+    summary_model: str = DEFAULT_REMOTE_MODEL
+    summary_effort: str = DEFAULT_SUMMARY_EFFORT
 
     # Stopwords for fuzzy matching (lang-specific)
     stopwords: list[str] = field(default_factory=list)
@@ -266,12 +262,10 @@ def _build(merged: dict[str, Any]) -> MeetingsConfig:
             Path(merged["journal_path"]).expanduser()
             if merged.get("journal_path") else None
         ),
-        project_matcher=ProjectMatcherConfig.from_dict(
-            meetings.get("project_matcher", {}),
-            llm.provider,
-        ),
+        project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
         llm=llm,
-        summary_model=meetings.get("summary_model", DEFAULT_SUMMARY_MODELS[llm.provider]),
+        summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),
+        summary_effort=meetings.get("summary_effort", DEFAULT_SUMMARY_EFFORT),
         stopwords=meetings.get("stopwords", []),
         summarize_prompt_path=_path("summarize_prompt_path"),
         summary_header=meetings.get("summary_header", "## Meeting Summary"),
