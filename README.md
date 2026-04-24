@@ -73,6 +73,11 @@ After `pip install -e .`:
 | `hugin-meet-compare-diarization` | Benchmark diarization pipelines |
 | `hugin-meet-tui` | Interactive curses TUI — drives the whole pipeline |
 
+Calendar matching searches calendars you own by default, which keeps shared or
+subscribed calendars from being picked accidentally. Use
+`hugin-meet-match-calendar --calendar <id>` for one specific calendar, or
+`--include-shared-calendars` if shared calendars should be considered too.
+
 ## Writing a frontend
 
 The GNOME tray widget lives in `frontends/gnome/` as a separate installable

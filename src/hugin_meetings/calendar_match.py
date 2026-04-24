@@ -173,7 +173,14 @@ def run_gws(*args: str) -> dict[str, Any]:
     return payload
 
 
-def list_calendars(calendar_id: str | None) -> list[dict[str, Any]]:
+def is_owned_calendar(calendar: dict[str, Any]) -> bool:
+    return bool(calendar.get("primary")) or calendar.get("accessRole") == "owner"
+
+
+def list_calendars(
+    calendar_id: str | None,
+    include_shared_calendars: bool = False,
+) -> list[dict[str, Any]]:
     if calendar_id:
         return [{"id": calendar_id, "summary": calendar_id, "primary": calendar_id == "primary"}]
 
@@ -187,12 +194,15 @@ def list_calendars(calendar_id: str | None) -> list[dict[str, Any]]:
                 "showDeleted": False,
                 "showHidden": False,
                 "maxResults": 250,
-                "minAccessRole": "reader",
+                "minAccessRole": "reader" if include_shared_calendars else "owner",
             }
         ),
     )
     items = payload.get("items", [])
-    return [item for item in items if not item.get("deleted")]
+    calendars = [item for item in items if not item.get("deleted")]
+    if include_shared_calendars:
+        return calendars
+    return [item for item in calendars if is_owned_calendar(item)]
 
 
 def list_events(
@@ -546,6 +556,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("transcript", nargs="?", help="Transcript .md file (default: latest)")
     parser.add_argument("--calendar", help="Restrict search to a single calendar ID, e.g. primary")
     parser.add_argument(
+        "--include-shared-calendars",
+        action="store_true",
+        help="Also search readable shared/subscribed calendars (default: owned calendars only)",
+    )
+    parser.add_argument(
         "--lookback-hours",
         type=float,
         default=DEFAULT_LOOKBACK.total_seconds() / 3600,
@@ -571,7 +586,7 @@ def main() -> int:
     try:
         transcript_path = resolve_transcript(args.transcript)
         transcript = load_transcript(transcript_path)
-        calendars = list_calendars(args.calendar)
+        calendars = list_calendars(args.calendar, args.include_shared_calendars)
         candidates = collect_candidates(
             transcript,
             calendars,
