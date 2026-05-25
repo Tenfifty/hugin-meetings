@@ -10,7 +10,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from hugin_meetings import pipeline
-from hugin_meetings.config import ProjectMatcherConfig, _build
+from hugin_meetings.config import MeetingsConfig, ProjectMatcherConfig
+
+_build = MeetingsConfig.from_merged
 
 
 class PromptConfigTests(unittest.TestCase):

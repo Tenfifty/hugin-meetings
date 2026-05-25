@@ -1,15 +1,11 @@
-# ~/.config/hugin/hugin.yaml  (shared across all hugin-* tools)
-# ----------------------------------------------------------------
-# Any field here may also live in meetings.yaml — meetings.yaml wins.
-
-user_name: "Your Name"
-vault_path: ~/Documents/notes      # your knowledge base / Obsidian vault
-
-
 # ~/.config/hugin/meetings.yaml  (meetings-specific)
 # ----------------------------------------------------------------
+# Shared fields (language, vault_path, journal_path, gws_bin, ...) live
+# in ~/.config/hugin/hugin.yaml — see the `hugin` package for the
+# canonical example. Run `hugin-init` to scaffold both files.
+
 meetings:
-  # Where transcripts and summaries are written (usually inside your vault)
+  # Where transcripts and summaries are written (usually inside your vault).
   transcripts_dir: ~/Documents/notes/meetings/transcripts
   summaries_dir:   ~/Documents/notes/meetings/summaries
 
@@ -37,15 +33,15 @@ meetings:
   # personal_section_header: "### For Me"
 
   # LLM provider for non-local models. Supported: codex, claude, gemini, local.
-  # Claude runs from clean_cwd by default to avoid repo-local CLAUDE.md discovery
-  # while still allowing your normal Claude Code login to work.
+  # Claude runs from a clean cwd by default to avoid repo-local CLAUDE.md
+  # discovery while still allowing your normal Claude Code login to work.
   # Gemini runs from a clean cwd and points context.fileName at a missing file,
   # since the CLI has no exact --bare equivalent.
   # The local provider runs one command per request. The prompt is sent on stdin
   # and stdout is used as the response, so GPU memory is released when it exits.
   llm:
     provider: codex
-    # clean_cwd: /tmp/hugin-meetings-llm-clean
+    # clean_cwd: /tmp/hugin-llm-clean
     # codex_bin: codex
     # claude_bin: claude
     # gemini_bin: gemini
@@ -68,10 +64,6 @@ meetings:
     #     status=$?
     #     rm -f "$prompt_file"
     #     exit "$status"
-
-  # Google Workspace CLI used to fetch calendar events.
-  # gws_bin: gws                    # binary on PATH
-  # gws_config_dir: ~/.config/gws   # optional override
 
   # Project / customer matching. Points at a directory of markdown notes
   # (one per project/customer). Leave unset to disable matching.

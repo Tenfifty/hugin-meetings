@@ -11,9 +11,11 @@ import argparse
 import sys
 from pathlib import Path
 
+from hugin.llm import run_prompt
+from hugin.prompts import resolve_prompt
+
 from .cli_utils import resolve_transcript_md
 from .config import load_config
-from .remote_llm import run_prompt
 _cfg = load_config()
 
 TRANSCRIPT_DIR = _cfg.transcripts_dir
@@ -25,11 +27,16 @@ LOCAL_MODELS = {
 }
 DEFAULT_MODEL = _cfg.summary_model
 
-_DEFAULT_PROMPT_PATH = Path(__file__).parent / "prompts" / "summary_default.md"
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def _load_prompt() -> str:
-    path = _cfg.summarize_prompt_path or _DEFAULT_PROMPT_PATH
+    path = resolve_prompt(
+        base="summary",
+        language=_cfg.language,
+        explicit=_cfg.summarize_prompt_path,
+        package_dir=_PROMPTS_DIR,
+    )
     return path.read_text(encoding="utf-8")
 
 

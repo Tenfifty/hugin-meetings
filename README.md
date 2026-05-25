@@ -1,7 +1,7 @@
 # hugin-meetings
 
 Record, transcribe, diarize, and summarize meetings. Part of the
-[Hugin](https://github.com/) personal productivity stack.
+[Hugin](https://github.com/Tenfifty/hugin) personal productivity stack.
 
 This is the **core engine** — language- and OS-agnostic. Frontends (tray
 widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
@@ -52,10 +52,13 @@ pip install -e frontends/gnome
 
 ## Configure
 
-Copy `config.example.yaml` and split it into:
+Run `hugin-init` (shipped with the `hugin` shared library) to scaffold
+`~/.config/hugin/hugin.yaml` and a vault layout. Then copy
+`config.example.yaml` into `~/.config/hugin/meetings.yaml` for the
+meetings-specific bits.
 
-- `~/.config/hugin/hugin.yaml`   — shared across all hugin-* tools
-- `~/.config/hugin/meetings.yaml` — meetings-specific
+- `hugin.yaml` — shared across all hugin-* tools (language, vault, gws, ...)
+- `meetings.yaml` — meetings-specific (transcripts dir, LLM, matcher, ...)
 
 `meetings.yaml` overrides `hugin.yaml`. Every field has a sensible default
 (English, generic summary prompt, matcher disabled), so a minimal config is fine.

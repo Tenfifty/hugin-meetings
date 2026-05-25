@@ -11,9 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from hugin.llm import run_prompt
+from hugin.prompts import resolve_prompt
+
 from . import summarize as summarize_tool
 from .config import load_config
-from .remote_llm import run_prompt
 
 _cfg = load_config()
 
@@ -79,7 +81,7 @@ CUSTOMER_JSON_SYSTEM_PROMPT = _cfg.project_matcher.json_system_prompt
 INACTIVE_DIR_NAMES = set(_cfg.project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
 MAX_MEETING_TEXT = 12000
-DEFAULT_CUSTOMER_PROMPT_PATH = Path(__file__).parent / "prompts" / "project_matcher_default.md"
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 @dataclass
@@ -630,7 +632,12 @@ def scan_recordings() -> list[MeetingStatus]:
 
 
 def _load_customer_prompt_template() -> str:
-    path = _cfg.project_matcher.prompt_path or DEFAULT_CUSTOMER_PROMPT_PATH
+    path = resolve_prompt(
+        base="project_matcher",
+        language=_cfg.language,
+        explicit=_cfg.project_matcher.prompt_path,
+        package_dir=_PROMPTS_DIR,
+    )
     return path.read_text(encoding="utf-8")
 
 

@@ -1,128 +1,33 @@
 """Configuration loading for Hugin Meetings.
 
-Reads two YAML files and merges them (meetings.yaml overrides hugin.yaml):
-- ~/.config/hugin/hugin.yaml   -- shared across all hugin-* tools
-- ~/.config/hugin/meetings.yaml -- meetings-specific
-
-Environment variable HUGIN_CONFIG_DIR overrides the config directory.
-Individual values can also be overridden by env vars prefixed with HUGIN_MEET_.
+Reads ~/.config/hugin/hugin.yaml + ~/.config/hugin/meetings.yaml via
+:func:`hugin.config.load_tool`. Override the config dir with
+``HUGIN_CONFIG_DIR``.
 """
 
 from __future__ import annotations
 
-import os
-import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-import yaml
+from hugin.config import SharedConfig, load_tool
+from hugin.llm import DEFAULT_REMOTE_MODEL, LLMConfig
 
-LLM_PROVIDERS = {"codex", "claude", "gemini", "local"}
-DEFAULT_REMOTE_MODEL = "default"
 DEFAULT_SUMMARY_EFFORT = "high"
 DEFAULT_PROJECT_MATCHER_EFFORT = "low"
 
 
-def _config_dir() -> Path:
-    override = os.environ.get("HUGIN_CONFIG_DIR")
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".config" / "hugin"
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a mapping at top level")
-    return data
-
-
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    out = dict(base)
-    for key, value in override.items():
-        if key in out and isinstance(out[key], dict) and isinstance(value, dict):
-            out[key] = _deep_merge(out[key], value)
-        else:
-            out[key] = value
-    return out
-
-
-def _expand(value: Any) -> Any:
-    if isinstance(value, str):
-        return os.path.expandvars(os.path.expanduser(value))
-    if isinstance(value, dict):
-        return {k: _expand(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_expand(v) for v in value]
-    return value
-
-
-def _string_list(data: dict[str, Any], key: str, default: list[str]) -> list[str]:
-    value = data.get(key, default)
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{key} must be a list of strings")
-    return value
-
-
-@dataclass
-class LLMConfig:
-    """Remote LLM command settings."""
-
-    provider: str = "codex"
-    clean_cwd: Path = field(
-        default_factory=lambda: Path(tempfile.gettempdir()) / "hugin-meetings-llm-clean"
-    )
-    codex_bin: str = "codex"
-    claude_bin: str = "claude"
-    gemini_bin: str = "gemini"
-    codex_args: list[str] = field(default_factory=list)
-    # Claude runs from clean_cwd by default so repo-local CLAUDE.md is not discovered.
-    claude_args: list[str] = field(default_factory=list)
-    gemini_args: list[str] = field(default_factory=list)
-    # Local command provider: receives prompt on stdin and returns text on stdout.
-    # Arguments may contain {model} and {effort} placeholders.
-    local_command: list[str] = field(default_factory=list)
-    # Gemini has no exact --bare equivalent. Use a clean cwd plus a workspace
-    # setting that points context discovery at an intentionally absent file.
-    gemini_disable_context: bool = True
-    gemini_context_file_name: str = ".hugin-meetings-no-gemini-context.md"
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "LLMConfig":
-        provider = str(data.get("provider", "codex")).lower()
-        if provider not in LLM_PROVIDERS:
-            raise ValueError(f"llm.provider must be one of: {', '.join(sorted(LLM_PROVIDERS))}")
-        clean_cwd = data.get("clean_cwd")
-        return cls(
-            provider=provider,
-            clean_cwd=Path(clean_cwd).expanduser() if clean_cwd else cls().clean_cwd,
-            codex_bin=data.get("codex_bin", "codex"),
-            claude_bin=data.get("claude_bin", "claude"),
-            gemini_bin=data.get("gemini_bin", "gemini"),
-            codex_args=_string_list(data, "codex_args", []),
-            claude_args=_string_list(data, "claude_args", []),
-            gemini_args=_string_list(data, "gemini_args", []),
-            local_command=_string_list(data, "local_command", []),
-            gemini_disable_context=data.get("gemini_disable_context", True),
-            gemini_context_file_name=data.get(
-                "gemini_context_file_name",
-                ".hugin-meetings-no-gemini-context.md",
-            ),
-        )
+def _opt_path(value: Any) -> Path | None:
+    return Path(value).expanduser() if value else None
 
 
 @dataclass
 class ProjectMatcherConfig:
     """Matches meetings to project/customer notes in a directory.
 
-    `internal_project` is the name of the note representing your own
+    ``internal_project`` is the name of the note representing your own
     organization (given priority during matching). Originally "Tenfifty"
     for the author; set to whatever makes sense for you, or leave empty.
     """
@@ -137,25 +42,19 @@ class ProjectMatcherConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ProjectMatcherConfig":
-        projects_dir = data.get("projects_dir")
-        prompt_path = data.get("prompt_path")
         return cls(
-            projects_dir=Path(projects_dir).expanduser() if projects_dir else None,
+            projects_dir=_opt_path(data.get("projects_dir")),
             internal_project=data.get("internal_project", ""),
             model=data.get("model", DEFAULT_REMOTE_MODEL),
             effort=data.get("effort", DEFAULT_PROJECT_MATCHER_EFFORT),
-            prompt_path=Path(prompt_path).expanduser() if prompt_path else None,
+            prompt_path=_opt_path(data.get("prompt_path")),
             json_system_prompt=data.get("json_system_prompt", "Return only valid JSON."),
             inactive_dir_names=data.get("inactive_dir_names", ["inactive", "inaktiva"]),
         )
 
 
 @dataclass
-class MeetingsConfig:
-    # Shared
-    user_name: str = ""
-    vault_path: Path | None = None
-
+class MeetingsConfig(SharedConfig):
     # Output (goes into your vault / knowledge base)
     transcripts_dir: Path = field(default_factory=lambda: Path.home() / "hugin_meetings" / "transcripts")
     summaries_dir: Path = field(default_factory=lambda: Path.home() / "hugin_meetings" / "summaries")
@@ -167,20 +66,13 @@ class MeetingsConfig:
     whisper_model: str = "large-v3"
     compute_type: str = "float16"
 
-    # Local llama.cpp summarization tuning. `summarize_n_gpu_layers`, if set,
+    # Local llama.cpp summarization tuning. ``summarize_n_gpu_layers``, if set,
     # overrides the auto pick (-1 = all on GPU). Otherwise models larger than
-    # `summarize_hybrid_threshold_gb` load in hybrid mode with
-    # `summarize_hybrid_n_gpu_layers` layers on the GPU.
+    # ``summarize_hybrid_threshold_gb`` load in hybrid mode with
+    # ``summarize_hybrid_n_gpu_layers`` layers on the GPU.
     summarize_n_gpu_layers: int | None = None
     summarize_hybrid_threshold_gb: float = 10.0
     summarize_hybrid_n_gpu_layers: int = 10
-
-    # Calendar (shared with other hugin-* tools; may live at top level)
-    gws_bin: str = "gws"
-    gws_config_dir: Path | None = None
-
-    # Daily journal file (shared; may live at top level)
-    journal_path: Path | None = None
 
     # Project/customer matching
     project_matcher: ProjectMatcherConfig = field(default_factory=ProjectMatcherConfig)
@@ -192,15 +84,12 @@ class MeetingsConfig:
 
     # Summary formatting — what the summarizer produces. Language-specific.
     summarize_prompt_path: Path | None = None
-    # summary_header is the H2 heading that marks the start of the summary
+    # H2 heading marking the start of the summary
     # (e.g. "## Meeting Summary" or "## Mötessammanfattning").
     summary_header: str = "## Meeting Summary"
     # Optional H3 section carved out of the summary for personal follow-ups
     # (e.g. "### For Me" or "### För David"). Empty disables extraction.
     personal_section_header: str = ""
-
-    # Raw merged dict for anything not explicitly modeled
-    raw: dict[str, Any] = field(default_factory=dict)
 
     @property
     def raw_audio_dir(self) -> Path:
@@ -226,51 +115,37 @@ class MeetingsConfig:
     def recorder_state_dir(self) -> Path:
         return self.state_dir / "state"
 
+    @classmethod
+    def from_merged(cls, merged: dict[str, Any]) -> "MeetingsConfig":
+        meetings = merged.get("meetings", {}) if isinstance(merged.get("meetings"), dict) else {}
+        defaults = cls()
 
-def _build(merged: dict[str, Any]) -> MeetingsConfig:
-    merged = _expand(merged)
-    meetings = merged.get("meetings", {}) if "meetings" in merged else merged
-    llm = LLMConfig.from_dict(meetings.get("llm", {}))
+        def _meet_path(key: str, default: Path | None) -> Path | None:
+            return _opt_path(meetings.get(key)) or default
 
-    def _path(key: str) -> Path | None:
-        # Falls back from meetings.<key> to top-level <key> (shared across hugin-* tools).
-        value = meetings.get(key) or merged.get(key)
-        return Path(value).expanduser() if value else None
-
-    defaults = MeetingsConfig()
-    cfg = MeetingsConfig(
-        user_name=merged.get("user_name", ""),
-        vault_path=_path("vault_path"),
-        transcripts_dir=_path("transcripts_dir") or defaults.transcripts_dir,
-        summaries_dir=_path("summaries_dir") or defaults.summaries_dir,
-        state_dir=_path("state_dir") or defaults.state_dir,
-        whisper_model=meetings.get("whisper_model", "large-v3"),
-        compute_type=meetings.get("compute_type", "float16"),
-        summarize_n_gpu_layers=meetings.get("summarize_n_gpu_layers"),
-        summarize_hybrid_threshold_gb=float(meetings.get("summarize_hybrid_threshold_gb", 10.0)),
-        summarize_hybrid_n_gpu_layers=int(meetings.get("summarize_hybrid_n_gpu_layers", 10)),
-        gws_bin=meetings.get("gws_bin", merged.get("gws_bin", "gws")),
-        gws_config_dir=_path("gws_config_dir"),
-        journal_path=_path("journal_path"),
-        project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
-        llm=llm,
-        summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),
-        summary_effort=meetings.get("summary_effort", DEFAULT_SUMMARY_EFFORT),
-        summarize_prompt_path=_path("summarize_prompt_path"),
-        summary_header=meetings.get("summary_header", "## Meeting Summary"),
-        personal_section_header=meetings.get("personal_section_header", ""),
-        raw=merged,
-    )
-    return cfg
+        return cls(
+            **SharedConfig.fields_from_merged(merged),
+            transcripts_dir=_meet_path("transcripts_dir", defaults.transcripts_dir) or defaults.transcripts_dir,
+            summaries_dir=_meet_path("summaries_dir", defaults.summaries_dir) or defaults.summaries_dir,
+            state_dir=_meet_path("state_dir", defaults.state_dir) or defaults.state_dir,
+            whisper_model=meetings.get("whisper_model", "large-v3"),
+            compute_type=meetings.get("compute_type", "float16"),
+            summarize_n_gpu_layers=meetings.get("summarize_n_gpu_layers"),
+            summarize_hybrid_threshold_gb=float(meetings.get("summarize_hybrid_threshold_gb", 10.0)),
+            summarize_hybrid_n_gpu_layers=int(meetings.get("summarize_hybrid_n_gpu_layers", 10)),
+            project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
+            llm=LLMConfig.from_dict(meetings.get("llm", {})),
+            summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),
+            summary_effort=meetings.get("summary_effort", DEFAULT_SUMMARY_EFFORT),
+            summarize_prompt_path=_meet_path("summarize_prompt_path", None),
+            summary_header=meetings.get("summary_header", "## Meeting Summary"),
+            personal_section_header=meetings.get("personal_section_header", ""),
+        )
 
 
 @lru_cache(maxsize=1)
 def load_config() -> MeetingsConfig:
-    cfg_dir = _config_dir()
-    shared = _load_yaml(cfg_dir / "hugin.yaml")
-    meetings = _load_yaml(cfg_dir / "meetings.yaml")
-    merged = _deep_merge(shared, meetings)
-    return _build(merged)
+    return load_tool("meetings", MeetingsConfig.from_merged)
 
 
 def reset_config_cache() -> None:
