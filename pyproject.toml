@@ -35,6 +35,7 @@ hugin-meet-summarize = "hugin_meetings.summarize:main"
 hugin-meet-enroll = "hugin_meetings.enroll:main"
 hugin-meet-match-calendar = "hugin_meetings.calendar_match:main"
 hugin-meet-tui = "hugin_meetings.tui:main"
+hugin-meet-migrate-yyyy = "hugin_meetings.migrate_yyyy:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

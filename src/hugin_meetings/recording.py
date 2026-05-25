@@ -22,7 +22,9 @@ def new_session_id(now: datetime | None = None) -> str:
 
 
 def raw_audio_part_path(audio_dir: Path, prefix: str, session_id: str, part: int) -> Path:
-    return audio_dir / f"{prefix}-{session_id}-p{part:02d}.opus"
+    from .pipeline import year_subdir
+
+    return audio_dir / year_subdir(session_id) / f"{prefix}-{session_id}-p{part:02d}.opus"
 
 
 def elapsed_label(start_time: float | None, now: float | None = None) -> str:
@@ -95,6 +97,7 @@ class RecordingTrack:
         self.current_file = raw_audio_part_path(
             self.audio_dir, self.prefix, self.session_id, self.next_part
         )
+        self.current_file.parent.mkdir(parents=True, exist_ok=True)
         command = build_ffmpeg_recording_command(
             source=self.source,
             output_path=self.current_file,

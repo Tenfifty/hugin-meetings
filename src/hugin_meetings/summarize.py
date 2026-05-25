@@ -120,10 +120,12 @@ def resolve_transcript(name: str | None) -> Path:
 
 
 def process_transcript(model_key: str, model, md_path: Path):
-    ts = md_path.stem.removeprefix("transcript-")
-    out_path = SUMMARY_DIR / f"summary-{ts}.md"
+    from .pipeline import year_subdir
 
-    SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
+    ts = md_path.stem.removeprefix("transcript-")
+    out_path = SUMMARY_DIR / year_subdir(ts) / f"summary-{ts}.md"
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if out_path.exists():
         existing = out_path.read_text().strip()
@@ -152,10 +154,10 @@ def process_transcript(model_key: str, model, md_path: Path):
 def find_unsummarized() -> list[Path]:
     summarized = {
         p.stem.removeprefix("summary-")
-        for p in SUMMARY_DIR.glob("summary-*.md")
+        for p in SUMMARY_DIR.rglob("summary-*.md")
         if p.read_text().strip()
     }
-    transcripts = sorted(TRANSCRIPT_DIR.glob("transcript-*.md"))
+    transcripts = sorted(TRANSCRIPT_DIR.rglob("transcript-*.md"))
     return [t for t in transcripts if t.stem.removeprefix("transcript-") not in summarized]
 
 

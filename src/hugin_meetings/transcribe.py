@@ -847,14 +847,16 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
     if session is None or not session.mic_parts:
         raise RuntimeError(f"No mic recording parts found for session {session_id}")
 
+    from .pipeline import year_subdir
+
     out_json = transcript_json_path(session_id)
-    out_md = TRANSCRIPT_DIR / f"transcript-{session_id}.md"
+    out_md = TRANSCRIPT_DIR / year_subdir(session_id) / f"transcript-{session_id}.md"
 
     if out_json.exists():
         print(f"  Already processed: {out_json.name}")
         return
 
-    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    out_md.parent.mkdir(parents=True, exist_ok=True)
     out_json.parent.mkdir(parents=True, exist_ok=True)
 
     sys_parts_by_index = {
@@ -915,9 +917,10 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
 
 def find_unprocessed() -> list[str]:
     """Find recording sessions that don't have a corresponding transcript."""
+    json_dir = load_config().transcript_json_dir
     processed = {
         p.stem.removeprefix("transcript-")
-        for p in transcript_json_path("").parent.glob("transcript-*.json")
+        for p in json_dir.rglob("transcript-*.json")
         if not p.name.endswith(".customer.json")
     }
     sessions = scan_raw_audio_sessions()

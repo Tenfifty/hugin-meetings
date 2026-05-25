@@ -243,12 +243,25 @@ def extract_timestamp(name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def year_subdir(name_or_ts: str) -> str:
+    """Return the YYYY subdir for a session timestamp or any name containing one.
+
+    Per-session files (transcripts, summaries, audio, json) live under
+    ``<dir>/YYYY/`` where YYYY is the year embedded in the timestamp.
+    Single source of truth so write and migration code agree.
+    """
+    ts = extract_timestamp(name_or_ts) or name_or_ts
+    if len(ts) < 4 or not ts[:4].isdigit():
+        raise ValueError(f"No year in {name_or_ts!r}")
+    return ts[:4]
+
+
 def relative_link(target: Path, base_dir: Path) -> str:
     return os.path.relpath(target, base_dir)
 
 
 def transcript_json_path(ts: str) -> Path:
-    return TRANSCRIPT_JSON_DIR / f"transcript-{ts}.json"
+    return TRANSCRIPT_JSON_DIR / year_subdir(ts) / f"transcript-{ts}.json"
 
 
 def transcript_json_for_markdown(path: Path) -> Path | None:
@@ -259,7 +272,7 @@ def transcript_json_for_markdown(path: Path) -> Path | None:
 
 
 def customer_state_path(ts: str) -> Path:
-    return TRANSCRIPT_JSON_DIR / f"transcript-{ts}.customer.json"
+    return TRANSCRIPT_JSON_DIR / year_subdir(ts) / f"transcript-{ts}.customer.json"
 
 
 @dataclass(frozen=True)
@@ -294,7 +307,7 @@ def parse_raw_audio_part(path: Path | str) -> RawAudioPart | None:
 def scan_raw_audio_sessions() -> dict[str, RawAudioSession]:
     sessions: dict[str, RawAudioSession] = {}
 
-    for path in sorted(RAW_AUDIO_DIR.glob("*.opus")):
+    for path in sorted(RAW_AUDIO_DIR.rglob("*.opus")):
         part = parse_raw_audio_part(path)
         if part is None:
             continue
@@ -335,19 +348,20 @@ def meeting_artifact_paths(rec: MeetingStatus) -> list[Path]:
         add(WAV_CACHE_DIR / f"{path.stem}.wav")
 
     for prefix in ("mic", "sys"):
-        for path in sorted(RAW_AUDIO_DIR.glob(f"{prefix}-{rec.timestamp}*.opus")):
+        for path in sorted(RAW_AUDIO_DIR.rglob(f"{prefix}-{rec.timestamp}*.opus")):
             add(path)
             add(WAV_CACHE_DIR / f"{path.stem}.wav")
-        for path in sorted(WAV_CACHE_DIR.glob(f"{prefix}-{rec.timestamp}*.wav")):
+        for path in sorted(WAV_CACHE_DIR.rglob(f"{prefix}-{rec.timestamp}*.wav")):
             add(path)
 
+    yyyy = year_subdir(rec.timestamp)
     add(rec.transcript_json)
     add(transcript_json_path(rec.timestamp))
     add(customer_state_path(rec.timestamp))
     add(rec.transcript_md)
-    add(TRANSCRIPT_DIR / f"transcript-{rec.timestamp}.md")
+    add(TRANSCRIPT_DIR / yyyy / f"transcript-{rec.timestamp}.md")
     add(rec.summary_md)
-    add(SUMMARY_DIR / f"summary-{rec.timestamp}.md")
+    add(SUMMARY_DIR / yyyy / f"summary-{rec.timestamp}.md")
 
     return [path for path in paths if path.exists()]
 
@@ -588,9 +602,9 @@ def scan_recordings() -> list[MeetingStatus]:
     timestamps: set[str] = set(raw_sessions)
 
     for pattern, prefix in (
-        (TRANSCRIPT_DIR.glob("transcript-*.md"), "transcript-"),
-        (TRANSCRIPT_JSON_DIR.glob("transcript-*.json"), "transcript-"),
-        (SUMMARY_DIR.glob("summary-*.md"), "summary-"),
+        (TRANSCRIPT_DIR.rglob("transcript-*.md"), "transcript-"),
+        (TRANSCRIPT_JSON_DIR.rglob("transcript-*.json"), "transcript-"),
+        (SUMMARY_DIR.rglob("summary-*.md"), "summary-"),
     ):
         for path in pattern:
             if path.name.endswith(".customer.json"):
@@ -607,9 +621,10 @@ def scan_recordings() -> list[MeetingStatus]:
         raw_session = raw_sessions.get(ts)
         mic_parts = tuple(raw_session.mic_parts) if raw_session else ()
         sys_parts = tuple(raw_session.sys_parts) if raw_session else ()
-        transcript_md = TRANSCRIPT_DIR / f"transcript-{ts}.md"
+        yyyy = year_subdir(ts)
+        transcript_md = TRANSCRIPT_DIR / yyyy / f"transcript-{ts}.md"
         transcript_json = transcript_json_path(ts)
-        summary_md = SUMMARY_DIR / f"summary-{ts}.md"
+        summary_md = SUMMARY_DIR / yyyy / f"summary-{ts}.md"
 
         meetings.append(
             MeetingStatus(

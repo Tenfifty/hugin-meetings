@@ -55,15 +55,17 @@ class DeleteMeetingEntryTests(unittest.TestCase):
 
     def test_delete_meeting_entry_removes_entry_artifacts_but_not_customer_notes(self) -> None:
         ts = "20260424-101112"
+        yyyy = "2026"
+        # Per-session files now live under <dir>/YYYY/; wav cache stays flat.
         artifacts = [
-            self.raw_dir / f"mic-{ts}-p01.opus",
-            self.raw_dir / f"sys-{ts}-p01.opus",
+            self.raw_dir / yyyy / f"mic-{ts}-p01.opus",
+            self.raw_dir / yyyy / f"sys-{ts}-p01.opus",
             self.wav_cache_dir / f"mic-{ts}-p01.wav",
             self.wav_cache_dir / f"sys-{ts}-p01.wav",
-            self.transcript_json_dir / f"transcript-{ts}.json",
-            self.transcript_json_dir / f"transcript-{ts}.customer.json",
-            self.transcript_dir / f"transcript-{ts}.md",
-            self.summary_dir / f"summary-{ts}.md",
+            self.transcript_json_dir / yyyy / f"transcript-{ts}.json",
+            self.transcript_json_dir / yyyy / f"transcript-{ts}.customer.json",
+            self.transcript_dir / yyyy / f"transcript-{ts}.md",
+            self.summary_dir / yyyy / f"summary-{ts}.md",
         ]
         for path in artifacts:
             self.write_file(path)

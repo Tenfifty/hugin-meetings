@@ -186,7 +186,7 @@ def cosine_similarities(embeddings: np.ndarray, centroid: np.ndarray) -> np.ndar
 # --- Transcript resolution ---
 
 def latest_transcript() -> Path | None:
-    files = sorted(TRANSCRIPT_JSON_DIR.glob("transcript-*.json"))
+    files = sorted(TRANSCRIPT_JSON_DIR.rglob("transcript-*.json"))
     return files[-1] if files else None
 
 
@@ -217,6 +217,12 @@ def resolve_transcript(name: str | None) -> Path:
         return TRANSCRIPT_JSON_DIR / path.name
     if (TRANSCRIPT_JSON_DIR / f"transcript-{path.name}").exists():
         return TRANSCRIPT_JSON_DIR / f"transcript-{path.name}"
+    # Final fallback: YYYY/-nested lookup via rglob.
+    matches = list(TRANSCRIPT_JSON_DIR.rglob(path.name)) or list(
+        TRANSCRIPT_JSON_DIR.rglob(f"transcript-{path.name}")
+    )
+    if matches:
+        return matches[0]
     print(f"Transcript not found: {name}", file=sys.stderr)
     sys.exit(1)
 
