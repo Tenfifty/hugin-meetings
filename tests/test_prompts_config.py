@@ -109,8 +109,12 @@ class ProjectMatcherPromptTests(unittest.TestCase):
             "Summary:\n{{summary_body}}\n"
         )
 
+        # load_config() returns the lru-cached MeetingsConfig; patching
+        # its attribute is observable to pipeline.build_customer_prompt.
+        from hugin_meetings.config import load_config
+
         with patch.object(
-            pipeline._cfg,
+            load_config(),
             "project_matcher",
             ProjectMatcherConfig(
                 projects_dir=self.customers_dir,

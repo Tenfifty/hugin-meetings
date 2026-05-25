@@ -26,14 +26,13 @@ from .cli_utils import resolve_transcript_md
 from .pipeline import extract_timestamp, transcript_json_for_markdown
 from .config import load_config
 
-_cfg = load_config()
-TRANSCRIPT_DIR = _cfg.transcripts_dir
+TRANSCRIPT_DIR = load_config().transcripts_dir
 METADATA_START = "<!-- calendar-metadata:start -->"
 METADATA_END = "<!-- calendar-metadata:end -->"
 SEGMENT_TS_RE = re.compile(r"\*\*\[(\d{2}):(\d{2}):(\d{2})\]")
-DEFAULT_GWS_CONFIG_DIR = _cfg.gws_config_dir or (Path.home() / ".config" / "gws")
+DEFAULT_GWS_CONFIG_DIR = load_config().gws_config_dir or (Path.home() / ".config" / "gws")
 DEFAULT_GWS_CREDENTIALS_FILE = DEFAULT_GWS_CONFIG_DIR / "credentials.json"
-DEFAULT_GWS_BIN = _cfg.gws_bin
+DEFAULT_GWS_BIN = load_config().gws_bin
 
 DEFAULT_LOOKBACK = timedelta(hours=4)
 DEFAULT_LOOKAHEAD = timedelta(hours=6)

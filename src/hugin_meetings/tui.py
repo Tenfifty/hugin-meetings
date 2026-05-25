@@ -18,8 +18,7 @@ from . import pipeline as audio_pipeline
 from .cli_utils import resolve_sibling_bin
 from .config import load_config
 
-_cfg = load_config()
-STATE_DIR = _cfg.state_dir
+STATE_DIR = load_config().state_dir
 LOG_DIR = STATE_DIR / "logs" / "audio-tui"
 
 

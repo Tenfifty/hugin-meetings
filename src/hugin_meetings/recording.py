@@ -12,9 +12,7 @@ from pathlib import Path
 
 from .config import load_config
 
-_cfg = load_config()
-
-RAW_AUDIO_DIR = _cfg.raw_audio_dir
+RAW_AUDIO_DIR = load_config().raw_audio_dir
 DEFAULT_RECORDER_LOG_PATH = Path(tempfile.gettempdir()) / "hugin-audio-recorder.log"
 DEFAULT_SEGMENT_MINUTES = 65
 

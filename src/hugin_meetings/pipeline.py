@@ -17,29 +17,27 @@ from hugin.prompts import resolve_prompt
 from . import summarize as summarize_tool
 from .config import load_config
 
-_cfg = load_config()
-
 # Output directories (written to the user's vault/knowledge base)
-TRANSCRIPT_DIR = _cfg.transcripts_dir
-SUMMARY_DIR = _cfg.summaries_dir
+TRANSCRIPT_DIR = load_config().transcripts_dir
+SUMMARY_DIR = load_config().summaries_dir
 
 # State / cache directories
-RAW_AUDIO_DIR = _cfg.raw_audio_dir
-STATE_AUDIO_DIR = _cfg.state_dir
-WAV_CACHE_DIR = _cfg.wav_cache_dir
-TRANSCRIPT_JSON_DIR = _cfg.transcript_json_dir
+RAW_AUDIO_DIR = load_config().raw_audio_dir
+STATE_AUDIO_DIR = load_config().state_dir
+WAV_CACHE_DIR = load_config().wav_cache_dir
+TRANSCRIPT_JSON_DIR = load_config().transcript_json_dir
 
 # Project/customer matching. Projects dir may be None if not configured.
 # Internal naming retains "CUSTOMERS_" for on-disk backward compatibility;
 # the user-facing concept is "project" (see config.project_matcher).
-CUSTOMERS_DIR = _cfg.project_matcher.projects_dir
-INTERNAL_PROJECT = _cfg.project_matcher.internal_project
+CUSTOMERS_DIR = load_config().project_matcher.projects_dir
+INTERNAL_PROJECT = load_config().project_matcher.internal_project
 
 def _relative_or_absolute(path: Path) -> str:
     """Return path relative to vault if possible, else absolute."""
-    if _cfg.vault_path:
+    if load_config().vault_path:
         try:
-            return str(path.relative_to(_cfg.vault_path))
+            return str(path.relative_to(load_config().vault_path))
         except ValueError:
             pass
     return str(path)
@@ -65,9 +63,9 @@ def is_backchannel(text: str) -> bool:
 FIELD_RE = re.compile(r"^- ([^:]+):\s*(.*)$")
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 SUMMARY_HEADER_RE = re.compile(
-    rf"^({re.escape(_cfg.summary_header)})(.*)$", re.MULTILINE
+    rf"^({re.escape(load_config().summary_header)})(.*)$", re.MULTILINE
 )
-PERSONAL_SECTION_HEADER = _cfg.personal_section_header
+PERSONAL_SECTION_HEADER = load_config().personal_section_header
 TRANSCRIPT_LINK_RE = re.compile(r"^\[Transcript\]\([^)]+\)\s*$", re.MULTILINE)
 CUSTOMER_ENTRY_HEADER_RE = re.compile(r"^## <\d{4}-\d{2}-\d{2} [^>]+>\s*$", re.MULTILINE)
 
@@ -75,10 +73,10 @@ CustomerAction = Literal["link_existing", "suggest_new", "no_match"]
 CustomerStatus = Literal["linked", "suggested_new", "no_match"]
 Confidence = Literal["high", "medium", "low"]
 
-DEFAULT_CUSTOMER_MODEL = _cfg.project_matcher.model
-DEFAULT_CUSTOMER_EFFORT = _cfg.project_matcher.effort
-CUSTOMER_JSON_SYSTEM_PROMPT = _cfg.project_matcher.json_system_prompt
-INACTIVE_DIR_NAMES = set(_cfg.project_matcher.inactive_dir_names)
+DEFAULT_CUSTOMER_MODEL = load_config().project_matcher.model
+DEFAULT_CUSTOMER_EFFORT = load_config().project_matcher.effort
+CUSTOMER_JSON_SYSTEM_PROMPT = load_config().project_matcher.json_system_prompt
+INACTIVE_DIR_NAMES = set(load_config().project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
 MAX_MEETING_TEXT = 12000
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -634,8 +632,8 @@ def scan_recordings() -> list[MeetingStatus]:
 def _load_customer_prompt_template() -> str:
     path = resolve_prompt(
         base="project_matcher",
-        language=_cfg.language,
-        explicit=_cfg.project_matcher.prompt_path,
+        language=load_config().language,
+        explicit=load_config().project_matcher.prompt_path,
         package_dir=_PROMPTS_DIR,
     )
     return path.read_text(encoding="utf-8")
@@ -709,7 +707,7 @@ def extract_json_object(text: str) -> dict:
 
 
 def run_remote_json_prompt(model: str, prompt: str, effort: str | None = None) -> dict:
-    return extract_json_object(run_prompt(_cfg.llm, model, prompt, effort=effort))
+    return extract_json_object(run_prompt(load_config().llm, model, prompt, effort=effort))
 
 
 def run_local_json_prompt(model: str, prompt: str) -> dict:
@@ -944,7 +942,7 @@ def format_log_timestamp(ts: str) -> str:
 def _summary_body_for_customer_note(summary_path: Path) -> str:
     text = _strip_transcript_link(_strip_customer_header_link(summary_path.read_text())).strip()
     lines = text.splitlines()
-    if lines and lines[0].startswith(_cfg.summary_header):
+    if lines and lines[0].startswith(load_config().summary_header):
         lines = lines[1:]
 
     body = "\n".join(lines).strip()
@@ -1071,7 +1069,7 @@ def write_customer_metadata(summary_path: Path, metadata: CustomerMetadata) -> N
     if SUMMARY_HEADER_RE.search(updated):
         updated = SUMMARY_HEADER_RE.sub(repl, updated, count=1)
     else:
-        updated = f"{_cfg.summary_header} {link}\n\n{updated.lstrip()}"
+        updated = f"{load_config().summary_header} {link}\n\n{updated.lstrip()}"
 
     summary_path.write_text(updated)
     ensure_summary_transcript_link(summary_path)

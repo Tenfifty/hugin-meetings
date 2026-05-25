@@ -26,10 +26,9 @@ from .pipeline import (
 )
 from .config import load_config
 
-_cfg = load_config()
-AUDIO_DIR = _cfg.raw_audio_dir
-TRANSCRIPT_DIR = _cfg.transcripts_dir
-SPEAKERS_DIR = _cfg.speakers_dir
+AUDIO_DIR = load_config().raw_audio_dir
+TRANSCRIPT_DIR = load_config().transcripts_dir
+SPEAKERS_DIR = load_config().speakers_dir
 
 # Segment filtering
 MIN_SEGMENT_DURATION = 2.5    # seconds

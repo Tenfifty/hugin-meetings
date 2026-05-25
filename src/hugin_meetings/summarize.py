@@ -16,16 +16,15 @@ from hugin.prompts import resolve_prompt
 
 from .cli_utils import resolve_transcript_md
 from .config import load_config
-_cfg = load_config()
 
-TRANSCRIPT_DIR = _cfg.transcripts_dir
-SUMMARY_DIR = _cfg.summaries_dir
-MODELS_DIR = _cfg.models_dir
+TRANSCRIPT_DIR = load_config().transcripts_dir
+SUMMARY_DIR = load_config().summaries_dir
+MODELS_DIR = load_config().models_dir
 LOCAL_MODELS = {
     "small": MODELS_DIR / "gemma-4-E4B-it-Q4_K_M.gguf",
     "large": MODELS_DIR / "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
 }
-DEFAULT_MODEL = _cfg.summary_model
+DEFAULT_MODEL = load_config().summary_model
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
@@ -33,8 +32,8 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 def _load_prompt() -> str:
     path = resolve_prompt(
         base="summary",
-        language=_cfg.language,
-        explicit=_cfg.summarize_prompt_path,
+        language=load_config().language,
+        explicit=load_config().summarize_prompt_path,
         package_dir=_PROMPTS_DIR,
     )
     return path.read_text(encoding="utf-8")
@@ -52,12 +51,12 @@ def load_local_model(model_key: str):
         print(f"Available: {', '.join(k for k, v in LOCAL_MODELS.items() if v.exists())}")
         sys.exit(1)
 
-    threshold_bytes = int(_cfg.summarize_hybrid_threshold_gb * 1024**3)
+    threshold_bytes = int(load_config().summarize_hybrid_threshold_gb * 1024**3)
     is_hybrid = model_path.stat().st_size > threshold_bytes
-    if _cfg.summarize_n_gpu_layers is not None:
-        n_gpu_layers = _cfg.summarize_n_gpu_layers
+    if load_config().summarize_n_gpu_layers is not None:
+        n_gpu_layers = load_config().summarize_n_gpu_layers
     else:
-        n_gpu_layers = _cfg.summarize_hybrid_n_gpu_layers if is_hybrid else -1
+        n_gpu_layers = load_config().summarize_hybrid_n_gpu_layers if is_hybrid else -1
 
     print(f"Loading model: {model_path.name} (n_gpu_layers={n_gpu_layers})")
     return Llama(
@@ -79,7 +78,7 @@ def clean_summary_text(text: str) -> str:
     text = re.sub(r"^[-*_\w]*thought[-*_\w]*\n+", "", text)
 
     for marker in (
-        _cfg.summary_header,
+        load_config().summary_header,
         "## Mötessammanfattning",
         "Här är en sammanfattning av mötet:",
         "**Sammanfattning",
@@ -108,11 +107,11 @@ def summarize_local(model, transcript_text: str) -> str:
 def summarize_remote(model_id: str, transcript_text: str) -> str:
     prompt = f"{SYSTEM_PROMPT}\n\nTranscript:\n\n{transcript_text}"
 
-    print(f"  Running {_cfg.llm.provider} with model: {model_id}")
+    print(f"  Running {load_config().llm.provider} with model: {model_id}")
     try:
-        return run_prompt(_cfg.llm, model_id, prompt, effort=_cfg.summary_effort)
+        return run_prompt(load_config().llm, model_id, prompt, effort=load_config().summary_effort)
     except RuntimeError as exc:
-        print(f"  {_cfg.llm.provider} failed: {str(exc)[:500]}", file=sys.stderr)
+        print(f"  {load_config().llm.provider} failed: {str(exc)[:500]}", file=sys.stderr)
         return ""
 
 

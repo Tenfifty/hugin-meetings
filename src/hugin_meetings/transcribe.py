@@ -29,13 +29,11 @@ from .pipeline import (
 )
 from .config import load_config
 
-_cfg = load_config()
-
-AUDIO_DIR = _cfg.raw_audio_dir
-WAV_CACHE_DIR = _cfg.wav_cache_dir
-TRANSCRIPT_DIR = _cfg.transcripts_dir
-SPEAKERS_DIR = _cfg.speakers_dir
-MODEL = _cfg.raw.get("meetings", {}).get("transcribe_model", "KBLab/kb-whisper-large")
+AUDIO_DIR = load_config().raw_audio_dir
+WAV_CACHE_DIR = load_config().wav_cache_dir
+TRANSCRIPT_DIR = load_config().transcripts_dir
+SPEAKERS_DIR = load_config().speakers_dir
+MODEL = load_config().raw.get("meetings", {}).get("transcribe_model", "KBLab/kb-whisper-large")
 DEFAULT_DIARIZER = "nemo"
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
