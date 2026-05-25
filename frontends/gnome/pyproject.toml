@@ -17,6 +17,7 @@ dependencies = [
 
 [project.scripts]
 hugin-meet-recorder = "hugin_meetings_gnome.recorder:main"
+hugin-meet-install-gnome-tray = "hugin_meetings_gnome.install:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

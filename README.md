@@ -43,12 +43,21 @@ System dependencies (not pip-installable):
 - `codex`, `claude`, or `gemini` CLI if you want to summarize via remote models
 - `gws` (Google Workspace CLI) if you want calendar matching
 
-For the optional GNOME tray widget, install `frontends/gnome/` separately:
+For the optional GNOME tray widget, install `frontends/gnome/` separately
+and run the bundled installer:
 
 ```
 pip install -e frontends/gnome
 # plus Gtk system libs: apt install python3-gi gir1.2-ayatanaappindicator3-0.1
+hugin-meet-install-gnome-tray            # writes the .desktop files
+hugin-meet-install-gnome-tray --dry-run  # preview without writing
 ```
+
+The installer drops `hugin-recorder.desktop` into both
+`~/.local/share/applications/` (app menu) and `~/.config/autostart/`
+(launches on login), with the absolute path to the bundled
+`launcher.sh` substituted in. Existing files are left alone unless you
+pass `--force`; pass `--no-autostart` if you only want the menu entry.
 
 ## Configure
 

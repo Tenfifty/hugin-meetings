@@ -1,7 +1,11 @@
+# Reference template — do not copy this file directly.
+# Use `hugin-meet-install-gnome-tray` (installed by this package) to
+# write the .desktop entries with the absolute launcher path substituted
+# in. See ../src/hugin_meetings_gnome/install.py for the generator.
 [Desktop Entry]
 Name=Hugin Recorder
-Comment=Toggle mic recording from the panel
-Exec=hugin-meet-recorder-launcher
+Comment=Audio capture indicator for mic and system audio
+Exec=@LAUNCHER@
 Icon=audio-input-microphone
 Type=Application
 Categories=AudioVideo;Utility;
