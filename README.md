@@ -27,12 +27,12 @@ widgets, phone apps) live under `frontends/` or in separate repos.
 The features are driven from command line utilities, but primary usage is expected to be through the TUI, `hugin-meet-tui` and optionally a desktop integration with a widget.
 
 The frontend reminder for starting/stopping recording, polls your `journal.md` and reacts on any entry of the form
-- [ ] Meeting about X *{16:00 - 16:30}*
+`- [ ] Meeting about X *{16:00 - 16:30}*`
 
 These entries will be manually written, or automatically synced from Google Calendar, see [hugin-agenda]('https://github.com/Tenfifty/hugin-agenda')
 
 To not be reminded on a timed entry, write "~" before the time:
-- [ ] Fika *~{15:00}*
+`- [ ] Fika *~{15:00}*`
 
 ## Install
 
