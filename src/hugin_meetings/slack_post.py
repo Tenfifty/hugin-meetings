@@ -89,12 +89,12 @@ def _render_table(table_lines: list[str]) -> str:
         else:
             data_rows.append(row)
 
-    lines = []
+    blocks = []
     for row in data_rows:
-        pairs = [f"{headers[j]}: {row[j]}" for j in range(n_cols) if j < len(headers) and row[j]]
+        pairs = [f"\x00{headers[j]}\x00: {row[j]}" for j in range(n_cols) if j < len(headers) and row[j]]
         if pairs:
-            lines.append(" | ".join(pairs))
-    return "\n".join(lines)
+            blocks.append("\n".join(pairs))
+    return "\n\n".join(blocks)
 
 
 def _convert_tables(text: str) -> str:
