@@ -60,6 +60,34 @@ def is_backchannel(text: str) -> bool:
     """True if ``text`` is non-empty and consists only of backchannel words."""
     words = text.lower().strip().split()
     return bool(words) and all(w.strip(".,!?") in BACKCHANNEL_WORDS for w in words)
+
+
+def _frontmatter_line_count(lines: list[str]) -> int:
+    """Return lines occupied by a leading YAML frontmatter block, or 0 if none."""
+    if not lines or lines[0].strip() != "---":
+        return 0
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            return i + 1
+    return 0  # unclosed — treat as absent
+
+
+def read_project_frontmatter(path: Path) -> dict[str, str]:
+    """Parse simple key: value YAML frontmatter from a project markdown file."""
+    if not path.exists():
+        return {}
+    lines = path.read_text().splitlines()
+    fm_end = _frontmatter_line_count(lines)
+    if fm_end == 0:
+        return {}
+    result: dict[str, str] = {}
+    for line in lines[1 : fm_end - 1]:
+        if ":" in line:
+            key, _, value = line.partition(":")
+            result[key.strip()] = value.strip().strip('"').strip("'")
+    return result
+
+
 FIELD_RE = re.compile(r"^- ([^:]+):\s*(.*)$")
 LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 SUMMARY_HEADER_RE = re.compile(
@@ -1043,9 +1071,12 @@ def sync_customer_note(customer_path: Path, summary_path: Path) -> None:
         updated = customer_text[:start].rstrip() + "\n\n" + entry + customer_text[end:].lstrip()
     else:
         lines = customer_text.splitlines()
-        insert_at = 0
-        if lines and lines[0].startswith("# "):
-            insert_at = 1
+        fm_end = _frontmatter_line_count(lines)
+        insert_at = fm_end
+        while insert_at < len(lines) and not lines[insert_at].strip():
+            insert_at += 1
+        if insert_at < len(lines) and lines[insert_at].startswith("# "):
+            insert_at += 1
             while insert_at < len(lines) and not lines[insert_at].strip():
                 insert_at += 1
         prefix = "\n".join(lines[:insert_at]).rstrip()

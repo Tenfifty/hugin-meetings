@@ -333,6 +333,9 @@ class AudioTui:
             elif key in (ord("x"), ord("X")):
                 self.remove_customer(stdscr, rec)
                 self.refresh()
+            elif key in (ord("s"), ord("S")):
+                self.slack_post_flow(stdscr, rec)
+                self.refresh()
             elif key in (ord("d"), ord("D")):
                 if self.delete_entry_flow(stdscr, rec):
                     self.refresh()
@@ -383,7 +386,7 @@ class AudioTui:
         elif rec.transcript_md and rec.transcript_md.exists():
             excerpt = rec.title
 
-        stdscr.addstr(7, 0, "e: enroll  l: manage customer  v: verify customer  x: remove customer  d: delete entry  g: run pending pipeline  b: back", curses.A_DIM)
+        stdscr.addstr(7, 0, "e: enroll  l: manage customer  v: verify customer  x: remove customer  d: delete entry  g: run pipeline  s: post to Slack  b: back", curses.A_DIM)
         stdscr.addstr(9, 0, "Summary excerpt", curses.color_pair(5) | curses.A_BOLD)
         for idx, line in enumerate(textwrap.wrap(excerpt, width=max(20, w - 2))[: max(1, h - 12)], start=10):
             if idx >= h - 1:
@@ -544,6 +547,21 @@ class AudioTui:
         audio_pipeline.remove_customer_link(rec.summary_md)
         self.append_log(f"Removed customer state for {rec.timestamp}")
         self.set_message("Removed cached/verified customer link.")
+
+    def slack_post_flow(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
+        if not rec.summary_md or not rec.summary_md.exists():
+            self.set_message("No summary yet.")
+            return
+        state = rec.customer_state
+        if not state or not state.customer_path:
+            self.set_message("No project linked. Link a project first (l).")
+            return
+        cmd = [resolve_sibling_bin("hugin-meet-slack-post"), str(rec.summary_md)]
+        try:
+            self.run_command(stdscr, f"Posting {rec.timestamp} to Slack...", cmd)
+            self.set_message("Posted to Slack.")
+        except Exception as exc:
+            self.set_message(str(exc))
 
     def delete_entry_flow(self, stdscr, rec: audio_pipeline.MeetingStatus) -> bool:
         paths = audio_pipeline.meeting_artifact_paths(rec)

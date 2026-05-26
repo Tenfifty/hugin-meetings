@@ -56,3 +56,28 @@ def resolve_transcript_md(transcripts_dir: Path, name: str | None) -> Path:
             return matches[0]
     print(f"Transcript not found: {name}", file=sys.stderr)
     sys.exit(1)
+
+
+def resolve_summary_md(summaries_dir: Path, name: str | None) -> Path:
+    """Resolve a summary .md file by filename, timestamp, or latest."""
+    if name is None:
+        files = sorted(summaries_dir.rglob("summary-*.md"))
+        if not files:
+            print("No summaries found.", file=sys.stderr)
+            sys.exit(1)
+        return files[-1]
+    path = Path(name)
+    if path.exists():
+        return path
+    for candidate in (summaries_dir / path, summaries_dir / f"summary-{path}"):
+        if candidate.exists():
+            return candidate
+    target = path.name if "/" not in str(path) else None
+    if target:
+        matches = list(summaries_dir.rglob(target))
+        if not matches:
+            matches = list(summaries_dir.rglob(f"summary-{path.name}"))
+        if matches:
+            return matches[0]
+    print(f"Summary not found: {name}", file=sys.stderr)
+    sys.exit(1)

@@ -19,7 +19,9 @@ widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
    LLM (llama.cpp) or a remote model through Codex, Claude Code, or Gemini CLI.
 5. **Match project/customer** — optionally links the summary to an
    existing project/customer note in your vault.
-6. **Enroll speakers** — learn speaker embeddings over time so future
+6. **Post to Slack** — posts the meeting abstract to a project Slack
+   channel, with the full summary (minus personal notes) as a thread reply.
+7. **Enroll speakers** — learn speaker embeddings over time so future
    recordings get named speakers instead of `SPEAKER_01`.
 
 ## Install
@@ -105,6 +107,7 @@ After `pip install -e .`:
 | `hugin-meet-transcribe [session-id\|file]` | Transcribe + diarize a recording session |
 | `hugin-meet-summarize [transcript]` | Summarize a transcript |
 | `hugin-meet-match-calendar [transcript]` | Attach calendar metadata |
+| `hugin-meet-slack-post [summary] [--channel #name]` | Post summary to Slack |
 | `hugin-meet-enroll` | Interactively enroll a new speaker |
 | `hugin-meet-tui` | Interactive curses TUI — drives the whole pipeline |
 
@@ -112,6 +115,39 @@ Calendar matching searches calendars you own by default, which keeps shared or
 subscribed calendars from being picked accidentally. Use
 `hugin-meet-match-calendar --calendar <id>` for one specific calendar, or
 `--include-shared-calendars` if shared calendars should be considered too.
+
+## Slack integration
+
+`hugin-meet-slack-post` posts a meeting summary to a Slack channel. It
+requires a Slack bot token and a `slack_channel` entry in the linked
+project file's frontmatter.
+
+**One-time bot setup:**
+
+1. Go to `api.slack.com/apps` → **Create New App** → **From scratch**
+2. *OAuth & Permissions* → Bot Token Scopes → add `chat:write`
+3. **Install to Workspace** → copy the `xoxb-…` Bot Token
+4. `export SLACK_BOT_TOKEN=xoxb-…` (add to your shell profile)
+
+**Per-channel setup:** in each Slack channel you want to post to, run
+`/invite @YourBotName`.
+
+**Per-project config:** add a `slack_channel` key to the YAML frontmatter
+at the top of the project note:
+
+```yaml
+---
+slack_channel: "#proj-acme"
+---
+
+# Acme Corp
+```
+
+Once configured, `hugin-meet-slack-post` (or `s` in the TUI after a
+project is linked) will post the meeting title and abstract as a Block Kit
+message, with the full summary (minus any personal-notes section) as a
+plain-text thread reply. Pass `--channel` to override the frontmatter
+value for a one-off post.
 
 ## Writing a frontend
 
@@ -141,6 +177,7 @@ src/hugin_meetings/
   enroll.py               Speaker enrollment
   calendar_match.py       Google Calendar matching
   tui.py                  Interactive TUI
+  slack_post.py           Slack posting
   prompts/                Summary and matcher prompt templates
 
 frontends/

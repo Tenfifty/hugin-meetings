@@ -36,6 +36,7 @@ hugin-meet-enroll = "hugin_meetings.enroll:main"
 hugin-meet-match-calendar = "hugin_meetings.calendar_match:main"
 hugin-meet-tui = "hugin_meetings.tui:main"
 hugin-meet-migrate-yyyy = "hugin_meetings.migrate_yyyy:main"
+hugin-meet-slack-post = "hugin_meetings.slack_post:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
