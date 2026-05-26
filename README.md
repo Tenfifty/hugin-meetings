@@ -81,6 +81,15 @@ The installer drops `hugin-recorder.desktop` into both
 `launcher.sh` substituted in. Existing files are left alone unless you
 pass `--force`; pass `--no-autostart` if you only want the menu entry.
 
+## Recording devices
+
+When recording starts, Hugin uses the audio devices that are currently set as
+the system defaults. The microphone track records from the default input
+source; the system-audio track records from the monitor of the default output
+sink. This applies whether recording is started from a frontend or a CLI entry
+point, so set the correct microphone and speaker/output device before starting
+the recording.
+
 ## Configure
 
 Run `hugin-init` (shipped with the `hugin` shared library) to scaffold
