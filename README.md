@@ -4,7 +4,7 @@ Record, transcribe, diarize, and summarize meetings. Part of the
 [Hugin](https://github.com/Tenfifty/hugin) personal productivity stack.
 
 This is the **core engine** — language- and OS-agnostic. Frontends (tray
-widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
+widgets, phone apps) live under `frontends/` or in separate repos.
 
 ## What it does
 
@@ -23,6 +23,16 @@ widgets, hotkeys, phone apps) live under `frontends/` or in separate repos.
    channel, with the full summary (minus personal notes) as a thread reply.
 7. **Enroll speakers** — learn speaker embeddings over time so future
    recordings get named speakers instead of `SPEAKER_01`.
+
+The features are driven from command line utilities, but primary usage is expected to be through the TUI, `hugin-meet-tui` and optionally a desktop integration with a widget.
+
+The frontend reminder for starting/stopping recording, polls your `journal.md` and reacts on any entry of the form
+- [ ] Meeting about X *{16:00 - 16:30}*
+
+These entries will be manually written, or automatically synced from Google Calendar, see [hugin-agenda]('https://github.com/Tenfifty/hugin-agenda')
+
+To not be reminded on a timed entry, write "~" before the time:
+- [ ] Fika *~{15:00}*
 
 ## Install
 

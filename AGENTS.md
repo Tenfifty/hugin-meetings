@@ -1,7 +1,7 @@
 # Repo guidance for Claude / Codex
 
 `hugin-meetings` is the **core engine** of a meeting recorder /
-transcriber / summarizer pipeline — part of the [Hugin](../hugin)
+transcriber / summarizer pipeline — part of the Hugin
 personal productivity stack. It is deliberately OS- and language-
 agnostic. GUI/tray frontends (e.g. `frontends/gnome/`) are separate
 installable packages that call into this engine via CLI entry points
@@ -9,7 +9,7 @@ and read pipeline state by scanning directories.
 
 The shared contract (config layout, language handling, vault
 structure, markdown headers, LLM provider naming, prompt-file
-convention) lives in [`../hugin/CONVENTIONS.md`](../hugin/CONVENTIONS.md).
+convention) lives in the separate hugin package in `hugin/CONVENTIONS.md`.
 Read that before touching `config.py` or anything that crosses tool
 boundaries.
 
