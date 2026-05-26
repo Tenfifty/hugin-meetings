@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -285,7 +284,7 @@ def year_subdir(name_or_ts: str) -> str:
 
 
 def relative_link(target: Path, base_dir: Path) -> str:
-    return os.path.relpath(target, base_dir)
+    return str(target)
 
 
 def transcript_json_path(ts: str) -> Path:
@@ -462,7 +461,7 @@ def parse_customer_metadata(path: Path | None) -> CustomerMetadata | None:
         if header_links:
             name, rel_path = header_links[0]
             ts = extract_timestamp(path.name)
-            transcript_path = TRANSCRIPT_DIR / f"transcript-{ts}.md"
+            transcript_path = TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md" if ts else None
             return CustomerMetadata(
                 status="linked",
                 confidence="high",
@@ -963,7 +962,7 @@ def _summary_transcript_path(summary_path: Path) -> Path:
     ts = extract_timestamp(summary_path.name)
     if not ts:
         raise ValueError(f"Could not determine timestamp from {summary_path.name}")
-    return TRANSCRIPT_DIR / f"transcript-{ts}.md"
+    return TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md"
 
 
 def ensure_summary_transcript_link(summary_path: Path) -> None:
