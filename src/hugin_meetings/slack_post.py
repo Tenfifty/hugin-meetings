@@ -78,19 +78,23 @@ def _render_table(table_lines: list[str]) -> str:
     n_cols = max(len(r) for r in rows)
     rows = [r + [""] * (n_cols - len(r)) for r in rows]
     sep_indices = {i for i, r in enumerate(rows) if _is_separator(r)}
-    widths = [0] * n_cols
-    for i, row in enumerate(rows):
-        if i not in sep_indices:
-            for j, cell in enumerate(row):
-                widths[j] = max(widths[j], len(cell))
-    rendered = []
+
+    headers: list[str] = []
+    data_rows: list[list[str]] = []
     for i, row in enumerate(rows):
         if i in sep_indices:
-            cells = ["-" * widths[j] for j in range(n_cols)]
+            continue
+        if not headers:
+            headers = row
         else:
-            cells = [row[j].ljust(widths[j]) for j in range(n_cols)]
-        rendered.append("| " + " | ".join(cells) + " |")
-    return "```\n" + "\n".join(rendered) + "\n```"
+            data_rows.append(row)
+
+    lines = []
+    for row in data_rows:
+        pairs = [f"{headers[j]}: {row[j]}" for j in range(n_cols) if j < len(headers) and row[j]]
+        if pairs:
+            lines.append(" | ".join(pairs))
+    return "\n".join(lines)
 
 
 def _convert_tables(text: str) -> str:
