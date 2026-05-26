@@ -39,6 +39,9 @@ pip install -e ".[transcribe]"
 pip install -e ".[summarize-local]"
 ```
 
+When developing from sibling checkouts, install the shared `hugin` library
+editable first, then this repo, then any frontend package.
+
 System dependencies (not pip-installable):
 
 - `ffmpeg` (audio conversion)
@@ -53,6 +56,13 @@ pip install -e frontends/gnome
 # plus Gtk system libs: apt install python3-gi gir1.2-ayatanaappindicator3-0.1
 hugin-meet-install-gnome-tray            # writes the .desktop files
 hugin-meet-install-gnome-tray --dry-run  # preview without writing
+```
+
+If you installed into a virtualenv, pass it to the installer so GNOME launches
+the same environment later:
+
+```
+hugin-meet-install-gnome-tray --venv /path/to/venv
 ```
 
 The installer drops `hugin-recorder.desktop` into both

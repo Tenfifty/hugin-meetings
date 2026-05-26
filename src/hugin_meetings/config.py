@@ -28,8 +28,8 @@ class ProjectMatcherConfig:
     """Matches meetings to project/customer notes in a directory.
 
     ``internal_project`` is the name of the note representing your own
-    organization (given priority during matching). Originally "Tenfifty"
-    for the author; set to whatever makes sense for you, or leave empty.
+    organization (given priority during matching). Leave it empty when
+    there is no special internal project/customer note.
     """
 
     projects_dir: Path | None = None
@@ -88,7 +88,7 @@ class MeetingsConfig(SharedConfig):
     # (e.g. "## Meeting Summary" or "## Mötessammanfattning").
     summary_header: str = "## Meeting Summary"
     # Optional H3 section carved out of the summary for personal follow-ups
-    # (e.g. "### For Me" or "### För David"). Empty disables extraction.
+    # (e.g. "### For Me" or "### Personal"). Empty disables extraction.
     personal_section_header: str = ""
 
     @property

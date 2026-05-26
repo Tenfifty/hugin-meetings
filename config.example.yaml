@@ -70,7 +70,7 @@ meetings:
   project_matcher:
     projects_dir: ~/Documents/notes/projects
     # Note representing your own organization — gets priority in matching.
-    # For the author this was "Tenfifty".
+    # Leave empty when you do not have a special internal project/customer note.
     internal_project: ""
     model: default
     effort: low                     # codex/claude only; ignored by gemini

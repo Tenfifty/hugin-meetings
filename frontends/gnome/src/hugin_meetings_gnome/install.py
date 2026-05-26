@@ -31,12 +31,15 @@ def _launcher_path() -> Path:
     return pkg_dir.parent.parent / "desktop" / "launcher.sh"
 
 
-def _render(launcher: Path, *, autostart: bool) -> str:
+def _render(launcher: Path, *, autostart: bool, venv: Path | None = None) -> str:
+    exec_line = f"Exec={launcher}"
+    if venv is not None:
+        exec_line = f"Exec=env HUGIN_MEETINGS_VENV={venv} {launcher}"
     lines = [
         "[Desktop Entry]",
         "Name=Hugin Recorder",
         "Comment=Audio capture indicator for mic and system audio",
-        f"Exec={launcher}",
+        exec_line,
         "Icon=audio-input-microphone",
         "Type=Application",
     ]
@@ -73,6 +76,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Path to launcher.sh (default: bundled with this package)",
     )
     p.add_argument(
+        "--venv",
+        type=Path,
+        default=None,
+        help="Set HUGIN_MEETINGS_VENV in the generated .desktop files",
+    )
+    p.add_argument(
         "--no-autostart",
         action="store_true",
         help="Skip the autostart copy under ~/.config/autostart/",
@@ -104,8 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     if not os.access(launcher, os.X_OK):
         print(f"Launcher not executable: {launcher}", file=sys.stderr)
         return 2
+    venv = args.venv.expanduser().resolve() if args.venv else None
 
     print(f"Launcher: {launcher}")
+    if venv is not None:
+        print(f"Virtualenv: {venv}")
     targets = _targets(args.no_autostart, args.app_menu_dir, args.autostart_dir)
 
     wrote = 0
@@ -122,7 +134,10 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         target.path.parent.mkdir(parents=True, exist_ok=True)
-        target.path.write_text(_render(launcher, autostart=target.autostart), encoding="utf-8")
+        target.path.write_text(
+            _render(launcher, autostart=target.autostart, venv=venv),
+            encoding="utf-8",
+        )
         print(f"  {marker} {target.path}")
         wrote += 1
 

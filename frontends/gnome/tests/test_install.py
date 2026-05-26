@@ -25,6 +25,17 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Exec=/some/where/launcher.sh", out)
         self.assertNotIn("@LAUNCHER@", out)
 
+    def test_render_can_pin_virtualenv(self) -> None:
+        out = _render(
+            Path("/some/where/launcher.sh"),
+            autostart=False,
+            venv=Path("/opt/hugin-venv"),
+        )
+        self.assertIn(
+            "Exec=env HUGIN_MEETINGS_VENV=/opt/hugin-venv /some/where/launcher.sh",
+            out,
+        )
+
     def test_autostart_adds_xdg_autostart_marker(self) -> None:
         autostart = _render(Path("/x/launcher.sh"), autostart=True)
         menu = _render(Path("/x/launcher.sh"), autostart=False)
@@ -73,6 +84,13 @@ class MainCLITests(unittest.TestCase):
         self.assertIn(f"Exec={self.launcher}", autostart)
         self.assertIn("X-GNOME-Autostart-enabled=true", autostart)
         self.assertNotIn("X-GNOME-Autostart-enabled", menu)
+
+    def test_venv_flag_writes_env_into_desktop_file(self) -> None:
+        venv = self.base / "venv"
+        rc = self._run("--venv", str(venv), "--no-autostart")
+        self.assertEqual(rc, 0)
+        menu = (self.app_menu / "hugin-recorder.desktop").read_text()
+        self.assertIn(f"Exec=env HUGIN_MEETINGS_VENV={venv} {self.launcher}", menu)
 
     def test_no_autostart_flag_skips_autostart_file(self) -> None:
         self._run("--no-autostart")

@@ -12,7 +12,7 @@ import logging
 import subprocess
 
 DEFAULT_PULSE_SOURCE = "default"
-DEFAULT_MONITOR_SOURCE = "alsa_output.pci-0000_65_00.6.analog-stereo.monitor"
+DEFAULT_MONITOR_SOURCE = "default.monitor"
 
 
 def load_pipewire_nodes() -> list[dict] | None:
@@ -26,6 +26,24 @@ def load_pipewire_nodes() -> list[dict] | None:
         return None
 
     return nodes if isinstance(nodes, list) else None
+
+
+def default_pulse_monitor_source() -> str:
+    """Return the PulseAudio/PipeWire monitor for the current default sink."""
+    try:
+        result = subprocess.run(
+            ["pactl", "get-default-sink"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+    except Exception:
+        logging.info("Could not inspect PulseAudio default sink; using generic monitor fallback")
+        return DEFAULT_MONITOR_SOURCE
+
+    sink = result.stdout.strip()
+    return f"{sink}.monitor" if sink else DEFAULT_MONITOR_SOURCE
 
 
 def _metadata_name(value):
@@ -104,8 +122,14 @@ def get_default_audio_routes(log: bool = True) -> tuple[str, str]:
     """Get the current mic and monitor sources for ffmpeg's pulse inputs."""
     nodes = load_pipewire_nodes()
     if nodes is None:
-        logging.info("Falling back to generic PulseAudio routes")
-        return DEFAULT_PULSE_SOURCE, DEFAULT_MONITOR_SOURCE
+        monitor_source = default_pulse_monitor_source()
+        if log:
+            logging.info(
+                "Falling back to PulseAudio routes: mic=%s sys=%s",
+                DEFAULT_PULSE_SOURCE,
+                monitor_source,
+            )
+        return DEFAULT_PULSE_SOURCE, monitor_source
 
     mic_source = resolve_default_audio_source(nodes)
     monitor_source = resolve_default_monitor_source(nodes)

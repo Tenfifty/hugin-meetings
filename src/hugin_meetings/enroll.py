@@ -5,7 +5,7 @@ Usage:
     enroll-speaker.py                               # interactive, uses latest transcript
     enroll-speaker.py transcript-20260408-223310.json
     enroll-speaker.py --list
-    enroll-speaker.py --remove David
+    enroll-speaker.py --remove Alice
 """
 
 import argparse

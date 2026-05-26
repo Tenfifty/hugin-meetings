@@ -52,7 +52,6 @@ All are defined in `pyproject.toml [project.scripts]`:
 - `hugin-meet-summarize` → `summarize:main` — LLM summarization (local llama.cpp OR `codex exec` remote)
 - `hugin-meet-match-calendar` → `calendar_match:main` — attaches Google Calendar metadata via `gws`
 - `hugin-meet-enroll` → `enroll:main` — interactive speaker enrollment
-- `hugin-meet-compare-diarization` → `diarization_compare:main`
 - `hugin-meet-tui` → `tui:main` — curses driver for the whole pipeline
 
 ## Architecture
