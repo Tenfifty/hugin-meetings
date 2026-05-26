@@ -96,6 +96,16 @@ meetings-specific bits.
 
 Override the config dir with `HUGIN_CONFIG_DIR=/path`.
 
+Transcripts and summaries are written to `meetings.transcripts_dir` and
+`meetings.summaries_dir`, usually inside your vault. Runtime state is kept under
+`meetings.state_dir` (default: `~/.hugin_audio`), including raw Opus audio in
+`raw/`, cached WAV files, transcript JSON, speaker embeddings, and downloaded
+models. These files are kept so recordings can be rescanned, reprocessed, or
+used for later speaker enrollment. To purge a single meeting entry from the TUI,
+select it and press `d`; this deletes the raw audio, transcript, summary, cached
+WAVs, and customer-state JSON for that meeting, while leaving project/customer
+notes untouched.
+
 The summary and project/customer matcher prompts are ordinary Markdown
 templates under `src/hugin_meetings/prompts/`. Set
 `meetings.summarize_prompt_path` or `meetings.project_matcher.prompt_path` to
