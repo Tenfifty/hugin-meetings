@@ -30,13 +30,15 @@ _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 def _load_prompt() -> str:
+    cfg = load_config()
     path = resolve_prompt(
         base="summary",
-        language=load_config().language,
-        explicit=load_config().summarize_prompt_path,
+        language=cfg.language,
+        explicit=cfg.summarize_prompt_path,
         package_dir=_PROMPTS_DIR,
     )
-    return path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    return text.replace("{{user_name}}", cfg.user_name or "mig")
 
 
 SYSTEM_PROMPT = _load_prompt()

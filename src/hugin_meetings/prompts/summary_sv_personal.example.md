@@ -32,7 +32,7 @@ Besvara följande frågor:
 9. Vilka öppna frågor återstår?
 10. Vilka risker, osäkerheter eller blockerare nämndes?
 11. Vilka viktiga fakta, siffror, verktyg, papers, kunder, system eller personer nämndes?
-12. Finns det något personligt som särskilt bör kommas ihåg eller följas upp?
+12. Finns det något som {{user_name}} särskilt bör komma ihåg eller följa upp?
 13. Vilka delar av din sammanfattning är osäkra på grund av dålig transkriptionskvalitet?
 14. Mötet behöver inte ha varit ett projektmöte, det kan ha varit ett allmänt diskussionsmöte, en brainstorm, en avstämning eller något annat. Var flexibel!
 
@@ -64,7 +64,7 @@ Kort beskrivning av varför mötet verkar ha hållits.
 ### Viktiga referenser
 - Verktyg, system, papers, personer, kunder eller andra saker som kan vara värda att återfinna senare.
 
-### För mig
+### För {{user_name}}
 - 1–5 korta punkter om vad som sannolikt är viktigast att komma ihåg eller göra efter mötet.
 
 ### Osäkerheter

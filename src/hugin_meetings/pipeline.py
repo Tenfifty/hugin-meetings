@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -284,7 +285,7 @@ def year_subdir(name_or_ts: str) -> str:
 
 
 def relative_link(target: Path, base_dir: Path) -> str:
-    return str(target)
+    return os.path.relpath(target, base_dir)
 
 
 def transcript_json_path(ts: str) -> Path:
