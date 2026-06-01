@@ -34,6 +34,8 @@ WAV_CACHE_DIR = load_config().wav_cache_dir
 TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
 MODEL = load_config().raw.get("meetings", {}).get("transcribe_model", "KBLab/kb-whisper-large")
+VOCABULARY = load_config().raw.get("meetings", {}).get("transcribe_vocabulary", [])
+VOCABULARY_PROMPT = ", ".join(VOCABULARY) or None
 DEFAULT_DIARIZER = "nemo"
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
@@ -664,6 +666,7 @@ def process_part(
             MODEL,
             dev,
             compute_type="float16" if dev == "cuda" else "int8",
+            asr_options={"initial_prompt": VOCABULARY_PROMPT},
         )
 
     def _run_whisper(audio_part: Path):

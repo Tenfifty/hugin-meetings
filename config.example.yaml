@@ -16,6 +16,12 @@ meetings:
   whisper_model: large-v3
   compute_type:  float16
 
+  # Bias transcription toward names/terms it tends to mishear (company names,
+  # people, products, acronyms). Passed to Whisper as the initial prompt.
+  # transcribe_vocabulary:
+  #   - Tenfifty
+  #   - ISO 13485
+
   # Local llama.cpp summarization. Leave unset for auto (all layers on GPU
   # for models <= threshold, hybrid split above). Set summarize_n_gpu_layers
   # explicitly to override — 0 forces pure CPU, any positive int caps GPU
