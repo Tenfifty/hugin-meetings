@@ -66,9 +66,7 @@ class AudioRecorder:
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-        mic_source, system_source = audio_routes.get_default_audio_routes()
-        self.mic = recording.RecordingTrack("mic", mic_source)
-        self.system = recording.RecordingTrack("sys", system_source)
+        self.session = recording.RecordingSession(audio_dir=AUDIO_DIR)
         self.pending_count = 0
         self.pending_refresh_at = 0.0
         self.today = date.today()
@@ -93,7 +91,7 @@ class AudioRecorder:
 
     @property
     def is_recording(self):
-        return self.mic.recording or self.system.recording
+        return self.session.recording
 
     def _load_reminder_state(self):
         return meeting_schedule.load_reminder_state(REMINDER_STATE_PATH)
@@ -136,12 +134,6 @@ class AudioRecorder:
     def _on_journal_changed(self, *_args):
         self._reload_journal_meetings()
 
-    def _recording_started_at(self):
-        timestamps = [track.start_time for track in (self.mic, self.system) if track.start_time]
-        if not timestamps:
-            return None
-        return datetime.fromtimestamp(min(timestamps))
-
     def _set_recording_meeting(self, meeting_key):
         self.reminder_state = meeting_schedule.set_recording_meeting(
             self.reminder_state, meeting_key
@@ -168,25 +160,17 @@ class AudioRecorder:
             return
 
         mic_source, system_source = audio_routes.get_default_audio_routes()
-        self.mic.source = mic_source
-        self.system.source = system_source
-
-        start = time.time()
-        session_id = recording.new_session_id()
         try:
-            for track in (self.mic, self.system):
-                track.recording = True
-                track.start_time = start
-                track.session_id = session_id
-                track.next_part = 1
-                track.start_segment()
-                track.segment_timer = GLib.timeout_add_seconds(
-                    SEGMENT_MINUTES * 60, track.rotate_segment
-                )
+            self.session.start(mic_source, system_source)
         except Exception:
             logging.exception("Failed to start recording")
-            self._mark_recording_failed()
+            self._teardown_recording()
             raise
+
+        for track in self.session.tracks:
+            track.segment_timer = GLib.timeout_add_seconds(
+                SEGMENT_MINUTES * 60, track.rotate_segment
+            )
 
         self.toggle_item.set_label("Stop Recording")
         if meeting_key:
@@ -208,30 +192,14 @@ class AudioRecorder:
     def _stop_recording(self):
         if not self.is_recording:
             return
+        self._teardown_recording()
 
-        for track in (self.mic, self.system):
-            track.stop_segment()
-            track.recording = False
+    def _teardown_recording(self):
+        for track in self.session.tracks:
             if track.segment_timer:
                 GLib.source_remove(track.segment_timer)
                 track.segment_timer = None
-            track.reset_session()
-        self.toggle_item.set_label("Start Recording")
-        self._clear_recording_meeting()
-        self._update_icon()
-
-    def _stop_tracks_for_rotation(self):
-        for track in (self.mic, self.system):
-            track.stop_segment()
-
-    def _mark_recording_failed(self):
-        for track in (self.mic, self.system):
-            track.stop_segment()
-            track.recording = False
-            if track.segment_timer:
-                GLib.source_remove(track.segment_timer)
-                track.segment_timer = None
-            track.reset_session()
+        self.session.stop()
         self.toggle_item.set_label("Start Recording")
         self._clear_recording_meeting()
         self._update_icon()
@@ -240,27 +208,16 @@ class AudioRecorder:
         logging.info(
             "Audio device change detected; rotating recording "
             "mic=%s->%s sys=%s->%s",
-            self.mic.source,
+            self.session.mic.source,
             mic_source,
-            self.system.source,
+            self.session.system.source,
             system_source,
         )
-        next_part = max(self.mic.next_part, self.system.next_part)
-        started_tracks = []
-        self._stop_tracks_for_rotation()
-        self.mic.source = mic_source
-        self.system.source = system_source
-        self.mic.next_part = next_part
-        self.system.next_part = next_part
         try:
-            for track in (self.mic, self.system):
-                track.start_segment()
-                started_tracks.append(track)
+            self.session.rotate(mic_source, system_source)
         except Exception:
             logging.exception("Failed to rotate recording after audio device change")
-            for track in started_tracks:
-                track.stop_segment()
-            self._mark_recording_failed()
+            self._teardown_recording()
             self.status_item.set_label("Recorder error after device change")
             raise
 
@@ -273,8 +230,8 @@ class AudioRecorder:
                 return True
             mic_source, system_source = current_routes
             if (
-                mic_source == self.mic.source
-                and system_source == self.system.source
+                mic_source == self.session.mic.source
+                and system_source == self.session.system.source
             ):
                 return True
             self._rotate_recording_to_sources(mic_source, system_source)
@@ -434,10 +391,10 @@ class AudioRecorder:
             self._refresh_pending_count()
 
             parts = []
-            if self.mic.recording:
-                parts.append(f"Mic {self.mic.elapsed_str()}")
-            if self.system.recording:
-                parts.append(f"Sys {self.system.elapsed_str()}")
+            if self.session.mic.recording:
+                parts.append(f"Mic {self.session.mic.elapsed_str()}")
+            if self.session.system.recording:
+                parts.append(f"Sys {self.session.system.elapsed_str()}")
             self.status_item.set_label(" | ".join(parts) if parts else "Idle")
             self.pending_item.set_label(f"Pending pipeline: {self.pending_count}")
             self.next_meeting_item.set_label(f"Next meeting: {self._next_meeting_label()}")

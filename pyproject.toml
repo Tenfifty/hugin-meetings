@@ -30,6 +30,7 @@ summarize-local = [
 ]
 
 [project.scripts]
+hugin-meet-record = "hugin_meetings.recording:main"
 hugin-meet-transcribe = "hugin_meetings.transcribe:main"
 hugin-meet-summarize = "hugin_meetings.summarize:main"
 hugin-meet-enroll = "hugin_meetings.enroll:main"
