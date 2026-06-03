@@ -16,17 +16,19 @@ dependencies = [
 
 [project.optional-dependencies]
 transcribe = [
-    "bottleneck>=1.3.6",
-    "coverage>=7.13",
     "huggingface-hub",
     "nemo_toolkit[asr]",
-    "nvidia-cudnn-cu11==8.9.6.50; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "numpy>=1.26.4,<2",
+    # whisperx>=3.8 requires pyannote.audio>=4 (for the speaker-diarization
+    # community-1 pipeline + token= kwarg used by transcribe/enroll) and
+    # numpy>=2.1, and bundles its CUDA cuDNN 9 via torch's cu12 wheels. Older
+    # whisperx (==3.3.1) pinned pyannote.audio==3.3.2, which cannot load
+    # community-1 and broke speaker naming; do not pin back below 3.8.
+    "numpy>=2.1",
     "pandas>=2.2,<3",
-    "pyannote.audio==3.3.2",
+    "pyannote.audio>=4.0,<5",
     "torch>=2.8,<2.9",
     "torchaudio>=2.8,<2.9",
-    "whisperx==3.3.1",
+    "whisperx>=3.8,<3.9",
 ]
 summarize-local = [
     "llama-cpp-python",

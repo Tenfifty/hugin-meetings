@@ -38,6 +38,20 @@ WAV_CACHE_DIR = load_config().wav_cache_dir
 TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
 MODEL = load_config().raw.get("meetings", {}).get("transcribe_model", "KBLab/kb-whisper-large")
+
+# whisperx ships built-in default wav2vec2 alignment models for a fixed set of
+# languages, but recent releases dropped several (incl. Swedish), turning a
+# missing default into a hard ``ValueError: No default align-model for
+# language: <lang>``. Supplement whisperx's defaults here so the languages we
+# actually transcribe keep aligning. Override or extend via
+# ``meetings.transcribe_align_models: {<lang>: <hf-model>}`` in config.
+DEFAULT_ALIGN_MODELS = {
+    "sv": "KBLab/wav2vec2-large-voxrex-swedish",
+}
+ALIGN_MODELS = {
+    **DEFAULT_ALIGN_MODELS,
+    **(load_config().raw.get("meetings", {}).get("transcribe_align_models") or {}),
+}
 DEFAULT_DIARIZER = "nemo"
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
@@ -177,9 +191,13 @@ def transcribe(audio_path: Path, model, device: str) -> dict:
             else:
                 raise
 
-    # Word-level alignment
+    # Word-level alignment. whisperx auto-selects a default align model for
+    # known languages; ALIGN_MODELS supplies (or overrides) one for languages
+    # whisperx no longer ships a default for, e.g. Swedish.
+    language = result["language"]
     align_model, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=device,
+        language_code=language, device=device,
+        model_name=ALIGN_MODELS.get(language),
     )
     result = whisperx.align(
         result["segments"], align_model, metadata, audio, device,

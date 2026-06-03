@@ -65,8 +65,23 @@ Use the repo-local virtualenv for the audio stack. WhisperX, PyAnnote, NeMo,
 Torch, NumPy, and Pandas have tight binary compatibility constraints, and a
 global/user-site Python install can easily conflict with unrelated tools.
 The `transcribe` extra also installs the pip NVIDIA runtime libraries needed
-by the CUDA model backends. Run commands with the venv activated, or call them
-through `.venv/bin/...`.
+by the CUDA model backends.
+
+Run commands with the venv activated, or call them through `.venv/bin/...`. To
+get them on your `PATH` without activating the venv, symlink the venv's console
+scripts into a directory already on `PATH` (e.g. `~/.local/bin`):
+
+```
+for s in "$PWD"/.venv/bin/hugin-meet-*; do
+    ln -sf "$s" ~/.local/bin/"$(basename "$s")"
+done
+```
+
+The console scripts carry an absolute shebang to the venv's Python, so the
+symlinks resolve to the right interpreter from any directory. Re-run this after
+recreating the venv. (Do **not** `pip install -e .` from a system/user Python to
+get these on `PATH` — that regenerates the wrappers with a `#!/usr/bin/python3`
+shebang that can't see the venv's CUDA stack.)
 
 System dependencies (not pip-installable):
 
