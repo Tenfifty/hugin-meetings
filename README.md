@@ -91,6 +91,11 @@ GNOME launches the same environment later:
 .venv/bin/hugin-meet-install-gnome-tray --venv "$PWD/.venv" --force
 ```
 
+When launching the tray manually from a repo checkout, call the bundled launcher
+script rather than `hugin-meet-recorder` directly. The launcher will infer
+`$PWD/.venv` from the checkout path; set `HUGIN_MEETINGS_VENV=/path/to/venv`
+only if you want to override that.
+
 The installer drops `hugin-recorder.desktop` into both
 `~/.local/share/applications/` (app menu) and `~/.config/autostart/`
 (launches on login), with the absolute path to the bundled

@@ -13,10 +13,20 @@ unset SNAP_UID SNAP_USER_COMMON SNAP_USER_DATA SNAP_VERSION
 unset LOCPATH
 
 # If HUGIN_MEETINGS_VENV is set, prefer that venv so the tray and every
-# subprocess it spawns use the same installed dependencies. Otherwise use the
-# user's PATH, which works for user installs and packaged installs.
+# subprocess it spawns use the same installed dependencies. For a repo checkout,
+# infer the adjacent .venv so launching this script manually does the same thing
+# as the generated desktop entry. Otherwise use the user's PATH, which works for
+# packaged installs.
 if [[ -n "${HUGIN_MEETINGS_VENV:-}" ]]; then
     VENV_BIN="$HUGIN_MEETINGS_VENV/bin"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+    REPO_VENV="$REPO_ROOT/.venv"
+    if [[ -x "$REPO_VENV/bin/hugin-meet-recorder" ]]; then
+        HUGIN_MEETINGS_VENV="$REPO_VENV"
+        VENV_BIN="$HUGIN_MEETINGS_VENV/bin"
+    fi
 fi
 
 if [[ -n "${VENV_BIN:-}" && -x "$VENV_BIN/hugin-meet-recorder" ]]; then
