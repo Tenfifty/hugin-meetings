@@ -68,6 +68,34 @@ class CalendarListTests(unittest.TestCase):
         params = json.loads(run_gws.call_args.args[-1])
         self.assertEqual(params["minAccessRole"], "owner")
 
+    def test_owner_access_to_another_persons_calendar_is_not_owned(self) -> None:
+        # Google reports accessRole "owner" when a colleague shares their
+        # personal calendar with manage rights; that calendar is not ours and
+        # must stay out of the default match. A group calendar we manage stays.
+        payload = {
+            "items": [
+                {"id": "primary", "summary": "Me", "primary": True, "accessRole": "owner"},
+                {
+                    "id": "anders.bjurstrom@example.com",
+                    "summary": "Anders",
+                    "accessRole": "owner",
+                },
+                {
+                    "id": "team_abc123@group.calendar.google.com",
+                    "summary": "Absence",
+                    "accessRole": "owner",
+                },
+            ]
+        }
+
+        with patch.object(calendar_match, "run_gws", return_value=payload):
+            calendars = calendar_match.list_calendars(None)
+
+        self.assertEqual(
+            [calendar["id"] for calendar in calendars],
+            ["primary", "team_abc123@group.calendar.google.com"],
+        )
+
     def test_include_shared_calendars_preserves_readable_calendars(self) -> None:
         payload = {
             "items": [

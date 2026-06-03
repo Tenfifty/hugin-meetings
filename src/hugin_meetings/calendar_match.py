@@ -172,7 +172,25 @@ def run_gws(*args: str) -> dict[str, Any]:
 
 
 def is_owned_calendar(calendar: dict[str, Any]) -> bool:
-    return bool(calendar.get("primary")) or calendar.get("accessRole") == "owner"
+    """True if the calendar is the user's own, not merely one they can manage.
+
+    Google reports ``accessRole == "owner"`` both for the user's own calendars
+    and for *another person's* personal calendar shared with "make changes and
+    manage sharing". Treating the latter as owned pulls colleagues' meetings
+    into the default match. The user's own personal calendar is always
+    ``primary``; any other calendar whose id is a person's email address is
+    someone else's. Group/resource calendars (``…@*.calendar.google.com``) the
+    user has owner access to are theirs to manage, so they stay included.
+    """
+    if calendar.get("primary"):
+        return True
+    if calendar.get("accessRole") != "owner":
+        return False
+    calendar_id = (calendar.get("id") or "").lower()
+    is_other_persons_calendar = (
+        "@" in calendar_id and not calendar_id.endswith(".calendar.google.com")
+    )
+    return not is_other_persons_calendar
 
 
 def list_calendars(
