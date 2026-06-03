@@ -14,8 +14,10 @@ from contextlib import contextmanager
 import gc
 import json
 import os
+import site
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -68,6 +70,54 @@ def _trusted_model_load_context():
             os.environ.pop(key, None)
         else:
             os.environ[key] = previous
+
+
+def _cuda_library_dirs() -> list[Path]:
+    """Find pip-installed NVIDIA runtime library dirs for CUDA model backends."""
+    site_package_dirs = []
+    for value in (
+        sysconfig.get_paths().get("purelib"),
+        sysconfig.get_paths().get("platlib"),
+        *getattr(site, "getsitepackages", lambda: [])(),
+        site.getusersitepackages(),
+    ):
+        if value:
+            path = Path(value)
+            if path not in site_package_dirs:
+                site_package_dirs.append(path)
+    nvidia_packages = (
+        "cublas",
+        "cuda_nvrtc",
+        "cudnn",
+        "cufft",
+        "curand",
+        "cusolver",
+        "cusparse",
+        "nccl",
+        "nvjitlink",
+    )
+    candidates = [
+        site_package_dir / "nvidia" / package / "lib"
+        for site_package_dir in site_package_dirs
+        for package in nvidia_packages
+    ]
+    return [path for path in candidates if path.exists()]
+
+
+def _with_cuda_library_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Prepend venv/user-site NVIDIA libs so CTranslate2 can dlopen CUDA deps."""
+    merged = dict(os.environ if env is None else env)
+    cuda_dirs = [str(path) for path in _cuda_library_dirs()]
+    if not cuda_dirs:
+        return merged
+
+    existing = [part for part in merged.get("LD_LIBRARY_PATH", "").split(":") if part]
+    merged["LD_LIBRARY_PATH"] = ":".join([*cuda_dirs, *existing])
+    return merged
+
+
+def _activate_cuda_library_path() -> None:
+    os.environ.update(_with_cuda_library_path())
 
 
 def is_silent(path: Path) -> bool:
@@ -670,6 +720,8 @@ def process_part(
     do_diarize: bool = True,
     diarizer_name: str = DEFAULT_DIARIZER,
 ) -> list[dict]:
+    _activate_cuda_library_path()
+
     import torch
     import whisperx
 
@@ -921,7 +973,7 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
             if not do_diarize:
                 cmd.append("--no-diarize")
 
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, env=_with_cuda_library_path())
             part_entries = json.loads(tmp_path.read_text())
             part_entries = _offset_entries(part_entries, session_offset)
             session_entries.extend(part_entries)

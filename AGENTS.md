@@ -16,17 +16,23 @@ boundaries.
 ## Install / dev setup
 
 ```
-pip install -e . --user --break-system-packages
-pip install -e ".[transcribe,summarize-local]"   # optional extras
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
+python -m pip install -e ".[transcribe,summarize-local]"   # optional extras
 ```
 
-The `--break-system-packages` flag is required on PEP 668 systems
-(Ubuntu/Debian). `hugin` (the shared library) is pulled in
-transitively; install it editable too if you want to develop against
-local hugin changes:
+Use the repo-local venv for the transcribe stack. WhisperX, PyAnnote,
+NeMo, Torch, NumPy, Pandas, and pip-installed NVIDIA CUDA/cuDNN runtimes
+have tight binary compatibility constraints, and global/user-site
+installs on PEP 668 systems can conflict with unrelated tools. `hugin`
+(the shared library) is pulled in transitively; install it editable too
+if you want to develop against local hugin changes:
 
 ```
-pip install -e ~/projs/hugin --user --break-system-packages
+python -m pip install -e ~/projs/hugin
+python -m pip install -e ".[transcribe]" -e frontends/gnome
 ```
 
 System deps (not pip-installable): `ffmpeg` (audio), `codex` / `claude` /

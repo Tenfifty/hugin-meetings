@@ -24,6 +24,16 @@ if [[ -n "${VENV_BIN:-}" && -x "$VENV_BIN/hugin-meet-recorder" ]]; then
     export PATH="$VENV_BIN:$HOME/.local/bin:$PATH"
     # Clear PYTHONHOME/PYTHONPATH so the venv's site-packages isn't shadowed.
     unset PYTHONHOME PYTHONPATH
+    CUDA_LIB_PATHS=()
+    for dir in "$VIRTUAL_ENV"/lib/python*/site-packages/nvidia/{cublas,cuda_nvrtc,cudnn,cufft,curand,cusolver,cusparse,nccl,nvjitlink}/lib; do
+        if [[ -d "$dir" ]]; then
+            CUDA_LIB_PATHS+=("$dir")
+        fi
+    done
+    if [[ "${#CUDA_LIB_PATHS[@]}" -gt 0 ]]; then
+        CUDA_LIB_PATH=$(IFS=:; printf '%s' "${CUDA_LIB_PATHS[*]}")
+        export LD_LIBRARY_PATH="$CUDA_LIB_PATH${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
 else
     if [[ -n "${VENV_BIN:-}" ]]; then
         echo "launcher.sh: no recorder in $VENV_BIN, falling back to ~/.local/bin" >&2

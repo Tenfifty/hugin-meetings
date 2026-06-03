@@ -37,20 +37,36 @@ To not be reminded on a timed entry, write "~" before the time:
 ## Install
 
 ```
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+
 # Core (pure Python)
-pip install -e .
+python -m pip install -e .
 
 # With transcription and speaker-enrollment deps
-pip install -e ".[transcribe]"
+python -m pip install -e ".[transcribe]"
 
 # Remote summarization through codex/claude/gemini uses CLI tools, no Python extra.
 
 # With local llama.cpp summarization deps
-pip install -e ".[summarize-local]"
+python -m pip install -e ".[summarize-local]"
 ```
 
 When developing from sibling checkouts, install the shared `hugin` library
 editable first, then this repo, then any frontend package.
+
+```
+python -m pip install -e ~/projs/hugin
+python -m pip install -e ".[transcribe]" -e frontends/gnome
+```
+
+Use the repo-local virtualenv for the audio stack. WhisperX, PyAnnote, NeMo,
+Torch, NumPy, and Pandas have tight binary compatibility constraints, and a
+global/user-site Python install can easily conflict with unrelated tools.
+The `transcribe` extra also installs the pip NVIDIA runtime libraries needed
+by the CUDA model backends. Run commands with the venv activated, or call them
+through `.venv/bin/...`.
 
 System dependencies (not pip-installable):
 
@@ -62,17 +78,17 @@ For the optional GNOME tray widget, install `frontends/gnome/` separately
 and run the bundled installer:
 
 ```
-pip install -e frontends/gnome
+python -m pip install -e frontends/gnome
 # plus Gtk system libs: apt install python3-gi gir1.2-ayatanaappindicator3-0.1
-hugin-meet-install-gnome-tray            # writes the .desktop files
-hugin-meet-install-gnome-tray --dry-run  # preview without writing
+.venv/bin/hugin-meet-install-gnome-tray --venv "$PWD/.venv"            # writes the .desktop files
+.venv/bin/hugin-meet-install-gnome-tray --venv "$PWD/.venv" --dry-run  # preview without writing
 ```
 
-If you installed into a virtualenv, pass it to the installer so GNOME launches
-the same environment later:
+If you move or recreate the virtualenv, rerun the installer with `--force` so
+GNOME launches the same environment later:
 
 ```
-hugin-meet-install-gnome-tray --venv /path/to/venv
+.venv/bin/hugin-meet-install-gnome-tray --venv "$PWD/.venv" --force
 ```
 
 The installer drops `hugin-recorder.desktop` into both
@@ -139,7 +155,7 @@ exit and release GPU memory after each request.
 
 ## CLI
 
-After `pip install -e .`:
+After activating the venv or installing with `python -m pip install -e .`:
 
 | Command | What |
 |---------|------|

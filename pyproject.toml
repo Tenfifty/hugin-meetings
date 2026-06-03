@@ -20,6 +20,7 @@ transcribe = [
     "coverage>=7.13",
     "huggingface-hub",
     "nemo_toolkit[asr]",
+    "nvidia-cudnn-cu11==8.9.6.50; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "numpy>=1.26.4,<2",
     "pandas>=2.2,<3",
     "pyannote.audio==3.3.2",
