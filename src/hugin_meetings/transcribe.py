@@ -7,16 +7,18 @@ Usage:
     transcribe.py --all                             # process all unprocessed sessions
 """
 
+from __future__ import annotations
+
 import argparse
+from contextlib import contextmanager
 import gc
 import json
+import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 from .cli_utils import get_hf_token
 from .pipeline import (
     SPEAKER_RE,
@@ -51,6 +53,21 @@ def _is_oom(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return isinstance(exc, RuntimeError) and "out of memory" in msg
+
+
+@contextmanager
+def _trusted_model_load_context():
+    """Load bundled/trusted WhisperX/PyAnnote checkpoints with legacy metadata."""
+    key = "TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD"
+    previous = os.environ.get(key)
+    os.environ[key] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
 
 
 def is_silent(path: Path) -> bool:
@@ -124,6 +141,8 @@ def transcribe(audio_path: Path, model, device: str) -> dict:
 
 
 def _annotation_to_df(annotation) -> pd.DataFrame:
+    import pandas as pd
+
     rows = []
     for segment, track, speaker in annotation.itertracks(yield_label=True):
         rows.append(
@@ -236,6 +255,7 @@ def extract_segment_embeddings(
     audio_path: Path, segments: list[dict], emb_model, device: str
 ) -> np.ndarray:
     """Extract one pyannote embedding per segment."""
+    import numpy as np
     import torch
     import torchaudio
 
@@ -660,11 +680,12 @@ def process_part(
     diarization_device = device
 
     def _load_whisper(dev: str):
-        return whisperx.load_model(
-            MODEL,
-            dev,
-            compute_type="float16" if dev == "cuda" else "int8",
-        )
+        with _trusted_model_load_context():
+            return whisperx.load_model(
+                MODEL,
+                dev,
+                compute_type="float16" if dev == "cuda" else "int8",
+            )
 
     def _run_whisper(audio_part: Path):
         nonlocal model, device, diarization_device
