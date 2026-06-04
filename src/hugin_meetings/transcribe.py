@@ -37,7 +37,7 @@ AUDIO_DIR = load_config().raw_audio_dir
 WAV_CACHE_DIR = load_config().wav_cache_dir
 TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
-MODEL = load_config().raw.get("meetings", {}).get("transcribe_model", "KBLab/kb-whisper-large")
+MODEL = load_config().whisper_model
 
 # whisperx ships built-in default wav2vec2 alignment models for a fixed set of
 # languages, but recent releases dropped several (incl. Swedish), turning a
