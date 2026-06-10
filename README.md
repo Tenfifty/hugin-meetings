@@ -179,6 +179,7 @@ After activating the venv or installing with `python -m pip install -e .`:
 
 | Command | What |
 |---------|------|
+| `hugin-meet-record` | Record mic + system audio until Ctrl-C (headless; no frontend needed) |
 | `hugin-meet-transcribe [session-id\|file]` | Transcribe + diarize a recording session |
 | `hugin-meet-summarize [transcript]` | Summarize a transcript |
 | `hugin-meet-match-calendar [transcript]` | Attach calendar metadata |
