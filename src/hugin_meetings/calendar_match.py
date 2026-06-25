@@ -130,9 +130,10 @@ def load_transcript(path: Path) -> TranscriptInfo:
 def gws_environment() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", str(DEFAULT_GWS_CONFIG_DIR))
-    env.setdefault(
-        "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", str(DEFAULT_GWS_CREDENTIALS_FILE)
-    )
+    if DEFAULT_GWS_CREDENTIALS_FILE.exists():
+        env.setdefault(
+            "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", str(DEFAULT_GWS_CREDENTIALS_FILE)
+        )
     return env
 
 
