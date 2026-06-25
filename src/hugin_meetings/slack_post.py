@@ -151,13 +151,19 @@ def _strip_personal(body: str) -> str:
 
 
 def _lead(body: str) -> str:
-    """Text before the first ### subsection."""
+    """Lead abstract for the in-channel message.
+
+    Normally the text before the first ``### `` subsection. If the body has no
+    ``### `` subsection at all, fall back to just the first paragraph, so a
+    mis-structured file (e.g. one using bold pseudo-headings) doesn't dump its
+    whole body into the channel message and then repeat it in the thread.
+    """
     lines: list[str] = []
     for line in body.splitlines():
         if line.strip().startswith("### "):
-            break
+            return "\n".join(lines).strip()
         lines.append(line)
-    return "\n".join(lines).strip()
+    return body.split("\n\n", 1)[0].strip()
 
 
 def _get_slack_channel(summary_path: Path) -> str | None:
