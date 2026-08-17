@@ -121,7 +121,7 @@ class ProjectMatcherPromptTests(unittest.TestCase):
                 prompt_path=template_path,
             ),
         ):
-            prompt, candidates = pipeline.build_customer_prompt(summary_path, "gpt-5.4-mini")
+            prompt, candidates = pipeline.build_customer_prompt(summary_path, "gpt-5.6-luna")
 
         self.assertIn("CUSTOM TEMPLATE", prompt)
         self.assertIn("Customer: Project Apollo", prompt)
