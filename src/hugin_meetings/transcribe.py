@@ -419,6 +419,10 @@ def diarize(
     speaker_id_model=None,
 ) -> dict:
     """Add speaker labels to transcription result using the selected diarizer."""
+    if not result.get("segments"):
+        print("    Skipping diarization: transcript has no segments")
+        return result
+
     if diarizer_name == "nemo":
         from whisperx.diarize import assign_word_speakers
 
