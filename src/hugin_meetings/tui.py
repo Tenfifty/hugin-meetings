@@ -49,14 +49,16 @@ class AudioTui:
         else:
             self.selected = 0
 
-    def append_log(self, line: str) -> None:
-        line = line.rstrip()
-        if line:
-            self.log_lines.append(line)
-            self.log_lines = self.log_lines[-200:]
+    def append_log(self, message: str) -> None:
+        for line in message.splitlines():
+            line = line.rstrip().expandtabs()
+            if line:
+                self.log_lines.append(line)
+        self.log_lines = self.log_lines[-200:]
 
     def set_message(self, message: str) -> None:
-        self.message = message
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        self.message = " | ".join(lines)
 
     def selected_recording(self) -> audio_pipeline.MeetingStatus | None:
         if not self.recordings:
