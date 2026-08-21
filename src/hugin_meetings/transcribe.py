@@ -72,6 +72,10 @@ LANGUAGE_ALIASES = {
     **(load_config().raw.get("meetings", {}).get("transcribe_language_aliases") or {}),
 }
 DEFAULT_DIARIZER = "nemo"
+# NeMo's default MSDD inference batch (25) OOMs on a 65 min part; 4 fits with
+# ~1.4 GB spare and diarizes 6.3x faster than the CPU fallback it replaces.
+# Measured identical output to batch 8, so there is no reason to run hotter.
+NEMO_MSDD_INFER_BATCH_SIZE = 4
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
 SPEAKER_MATCH_THRESHOLD = 0.5  # cosine similarity threshold for speaker matching
@@ -303,6 +307,24 @@ def _set_nemo_clustering_device(diarizer, device: str) -> None:
     clus._speaker_model = clus._speaker_model.to(torch.device(device))
 
 
+def _set_nemo_msdd_batch_size(diarizer, batch_size: int) -> None:
+    """Shrink MSDD's inference batch so long parts fit on an 8 GB card.
+
+    NeMo defaults ``infer_batch_size`` to 25, which OOMs in the MSDD forward
+    pass (``conv_scale_weights`` -> relu) on a 65 min part — the length the
+    recorder rotates at, so every long meeting produces one. Note the OOM is
+    *not* in clustering: that stage handles 12940 segments unchunked without
+    complaint, so ``embeddings_per_chunk`` is the wrong knob here.
+
+    ``transfer_diar_params_to_model_params`` already copied the config value
+    into ``test_ds`` at construction, so set both; ``setup_test_data`` re-reads
+    ``test_ds.batch_size`` at inference time, which is what actually takes
+    effect.
+    """
+    diarizer._cfg.diarizer.msdd_model.parameters.infer_batch_size = batch_size
+    diarizer.msdd_model.cfg.test_ds.batch_size = batch_size
+
+
 def load_pyannote_embedding_model(hf_token: str, device: str):
     """Load pyannote's speaker embedding model for post-hoc speaker naming."""
     import torch
@@ -329,6 +351,7 @@ def load_diarizer(diarizer_name: str, device: str, hf_token: str | None):
         # NeMo 2.7.2 otherwise leaves clustering on CPU even when loaded on CUDA.
         if device == "cuda":
             _set_nemo_clustering_device(diarizer, device)
+            _set_nemo_msdd_batch_size(diarizer, NEMO_MSDD_INFER_BATCH_SIZE)
         return diarizer
 
     if diarizer_name == "whisperx":
