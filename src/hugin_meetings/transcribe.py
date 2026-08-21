@@ -52,6 +52,25 @@ ALIGN_MODELS = {
     **DEFAULT_ALIGN_MODELS,
     **(load_config().raw.get("meetings", {}).get("transcribe_align_models") or {}),
 }
+
+# Whisper detects language from the first 30s of each channel, which on a quiet
+# or small-talk opening routinely lands on Norwegian for Swedish speech at
+# ~0.5 confidence. That costs twice: the transcript decodes in the wrong
+# language, and whisperx's default align model for ``no``/``nn`` is a 1B
+# wav2vec2 (3.85 GB) that does not fit on an 8 GB card next to large-v3, so the
+# whole part falls back to CPU. Collapse Norwegian onto Swedish — mixed sv/no
+# meetings are read in Swedish anyway, and it keeps detection to a stable sv/en
+# split. Override via ``meetings.transcribe_language_aliases: {<detected>:
+# <forced>}`` in config.
+DEFAULT_LANGUAGE_ALIASES = {
+    "no": "sv",
+    "nb": "sv",
+    "nn": "sv",
+}
+LANGUAGE_ALIASES = {
+    **DEFAULT_LANGUAGE_ALIASES,
+    **(load_config().raw.get("meetings", {}).get("transcribe_language_aliases") or {}),
+}
 DEFAULT_DIARIZER = "nemo"
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
@@ -69,6 +88,18 @@ def _is_oom(exc: BaseException) -> bool:
         return True
     msg = str(exc).lower()
     return isinstance(exc, RuntimeError) and "out of memory" in msg
+
+
+def _release_oom_traceback(exc: BaseException) -> None:
+    """Detach an OOM traceback so the CUDA models it pins can be collected.
+
+    Every CPU fallback below runs inside its ``except`` block, where the live
+    exception still owns the traceback of the call that failed. Those frames
+    hold the CUDA whisper/align/diarizer models as locals, so ``del model`` +
+    ``empty_cache()`` free nothing and the GPU stays pinned for the entire slow
+    CPU run — measured at 7.6 GB of 8 GB retained with the GPU fully idle.
+    """
+    exc.__traceback__ = None
 
 
 @contextmanager
@@ -180,9 +211,18 @@ def transcribe(audio_path: Path, model, device: str) -> dict:
 
     audio = whisperx.load_audio(str(audio_path))
 
+    # Resolve the language before transcribing rather than reading it off the
+    # result, so LANGUAGE_ALIASES can redirect a detection we don't trust.
+    # Passing it explicitly also skips whisperx's own detection pass.
+    language = model.detect_language(audio)
+    alias = LANGUAGE_ALIASES.get(language)
+    if alias and alias != language:
+        print(f"    Detected {language}, transcribing as {alias}")
+        language = alias
+
     for batch_size in (8, 4, 2):
         try:
-            result = model.transcribe(audio, batch_size=batch_size)
+            result = model.transcribe(audio, batch_size=batch_size, language=language)
             break
         except RuntimeError as e:
             if "out of memory" in str(e) and batch_size > 2:
@@ -194,7 +234,6 @@ def transcribe(audio_path: Path, model, device: str) -> dict:
     # Word-level alignment. whisperx auto-selects a default align model for
     # known languages; ALIGN_MODELS supplies (or overrides) one for languages
     # whisperx no longer ships a default for, e.g. Swedish.
-    language = result["language"]
     align_model, metadata = whisperx.load_align_model(
         language_code=language, device=device,
         model_name=ALIGN_MODELS.get(language),
@@ -769,6 +808,7 @@ def process_part(
             if not _is_oom(exc) or device != "cuda":
                 raise
             print(f"    Whisper OOM on CUDA for {audio_part.name}; falling back to CPU/int8 (slow).")
+            _release_oom_traceback(exc)
             try:
                 del model
             except NameError:
@@ -788,6 +828,7 @@ def process_part(
             if not _is_oom(exc) or device != "cuda":
                 raise
             print("    Whisper OOM loading on CUDA; falling back to CPU/int8 (slow).")
+            _release_oom_traceback(exc)
             gc.collect()
             torch.cuda.empty_cache()
             device = "cpu"
@@ -839,6 +880,7 @@ def process_part(
                 if not _is_oom(exc) or diarization_device != "cuda":
                     raise
                 print(f"    {diarizer_name} diarization OOM on CUDA for mic, retrying with a fresh CPU diarizer...")
+                _release_oom_traceback(exc)
                 diarizer_model = None
                 gc.collect()
                 torch.cuda.empty_cache()
@@ -870,6 +912,7 @@ def process_part(
                     if not _is_oom(exc) or diarization_device != "cuda":
                         raise
                     print(f"    {diarizer_name} diarization OOM on CUDA, retrying with a fresh CPU diarizer...")
+                    _release_oom_traceback(exc)
                     diarizer_model = None
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -907,6 +950,7 @@ def process_part(
                     if not _is_oom(exc) or speaker_id_device != "cuda":
                         raise
                     print("    Speaker-naming OOM on CUDA; reloading embedding model on CPU.")
+                    _release_oom_traceback(exc)
                     speaker_id_model = None
                     gc.collect()
                     torch.cuda.empty_cache()
