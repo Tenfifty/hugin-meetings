@@ -79,13 +79,15 @@ summary         →  pipeline.py project/customer matcher → links summary into
 - **`transcribe.py`** / **`transcribe_part.py`** — `transcribe_part.py` is spawned as a **subprocess** per audio part (to release GPU memory between parts). Do not refactor that into an in-process call without thinking about VRAM.
 - **`summarize.py`** — dispatches to either local llama.cpp models (via `LOCAL_MODELS`) or the shared `hugin.llm.run_prompt` for codex / claude / gemini. Prompt selection uses `hugin.prompts.resolve_prompt` so `language: sv` auto-picks `prompts/summary_sv.md` when shipped.
 - **`calendar_match.py`** — shells out to `gws`. By default only searches calendars the user owns; `--include-shared-calendars` / `--calendar <id>` override.
-- **`tui.py`** — curses UI that orchestrates the other CLIs; the canonical example of how a frontend should drive the pipeline.
+- **`tui.py`** — curses UI that orchestrates the other CLIs. It is the pipeline driver: frontends hand off to it rather than calling the stage CLIs themselves (see *Frontend integration contract*).
 
 ### Filename / directory conventions (load-bearing — see `pipeline.py`)
 
-- Raw audio: `{mic|sys}-{YYYYMMDD-HHMMSS}-p{NN}.opus` in `cfg.raw_audio_dir`. Parsed by `RAW_AUDIO_RE`. Session ID is the timestamp.
-- Transcripts: `transcripts_dir/transcript-{ts}.md`, JSON cache in `cfg.transcript_json_dir`.
-- Summaries: `summaries_dir/*.md`.
+- Per-session files live under a `YYYY/` subdir of their base dir, derived from the session timestamp by `pipeline.year_subdir()`. Scans use `rglob`; writers must go through the path helpers.
+- Raw audio: `cfg.raw_audio_dir/YYYY/{mic|sys}-{YYYYMMDD-HHMMSS}-p{NN}.opus`, built by `recording.raw_audio_part_path`. Parsed by `RAW_AUDIO_RE`. Session ID is the timestamp.
+- Transcripts: `transcripts_dir/YYYY/transcript-{ts}.md`, JSON cache at `cfg.transcript_json_dir/YYYY/transcript-{ts}.json` (`pipeline.transcript_json_path`). The JSON is a bare list of segment dicts — several modules read it positionally, so it has no metadata wrapper.
+- Summaries: `summaries_dir/YYYY/summary-{ts}.md`.
+- Customer/project match state: `cfg.transcript_json_dir/YYYY/transcript-{ts}.customer.json` (`pipeline.customer_state_path`).
 - Calendar metadata in transcripts is bracketed by `<!-- calendar-metadata:start -->` / `<!-- calendar-metadata:end -->` (constants `CALENDAR_METADATA_START/END`).
 - Summary header is configurable (`summary_header`, default `## Meeting Summary`); `personal_section_header` optionally carves out an H3 for personal follow-ups.
 - Speaker labels in transcripts match `SPEAKER_RE` (`speaker_01`, `SPEAKER_01`, optional `_p01` part suffix).
@@ -102,11 +104,26 @@ Files suffixed `.example.md` are starter templates for users to copy — they ar
 
 ### Frontend integration contract
 
-A frontend's job is narrow:
+A frontend's job is narrow: **record, and show state**. It does not run the
+pipeline — it hands off to the TUI, which drives transcription/summarization.
+`frontends/gnome/` is the reference implementation of exactly this surface.
 
-1. Spawn `ffmpeg` to write `{mic|sys}-{session_id}-p{NN}.opus` into `cfg.raw_audio_dir`.
-2. Call `hugin-meet-transcribe <session-id>` when done.
-3. Read state via `hugin_meetings.pipeline.scan_raw_audio_sessions()`.
+1. Record via `hugin_meetings.recording` — `RecordingSession(audio_dir=cfg.raw_audio_dir)`
+   with `start()` / `stop()` / `rotate()`. It builds the `ffmpeg` command and
+   writes parts to the right path (`recording.raw_audio_part_path`, which
+   includes the `YYYY/` subdir). Don't reimplement the ffmpeg invocation or the
+   filename layout in the frontend.
+2. Resolve input devices via `hugin_meetings.audio_routes`
+   (`get_default_audio_routes()`), not by parsing PipeWire yourself.
+3. Read pipeline state via `hugin_meetings.pipeline.scan_recordings()` →
+   `MeetingStatus.needs_pipeline` for a pending count.
+   `scan_raw_audio_sessions()` is the rawer view if that is all you need.
+4. Hand off processing by launching `hugin-meet-tui`
+   (`cli_utils.resolve_sibling_bin("hugin-meet-tui")`). Frontends do **not**
+   call `hugin-meet-transcribe` / `-summarize` / `-match-calendar` directly;
+   those stages have ordering requirements the TUI owns.
+5. Optionally surface upcoming meetings via `hugin_meetings.schedule`
+   (journal-derived, plus the recorder reminder state).
 
 Don't expand this surface casually — frontends live in other repos and would break.
 
