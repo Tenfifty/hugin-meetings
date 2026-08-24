@@ -10,19 +10,29 @@ widgets, phone apps) live under `frontends/` or in separate repos.
 
 1. **Record** — captures mic + system audio in parallel as Opus files,
    splitting into parts at a configurable interval.
-2. **Transcribe + diarize** — runs Whisper (or a fine-tuned variant) and
-   a speaker diarizer, merges the outputs into a unified transcript.
-3. **Match calendar event** — finds the matching Google Calendar event
-   and attaches metadata (attendees, title, time, location) to the
-   transcript.
-4. **Summarize** — generates a structured meeting summary via a local
+2. **Guess the context** — as soon as recording stops, works out what the
+   meeting *was*: the spoken language (sampled from the audio), the matching
+   Google Calendar event, and which project/customer note it belongs to.
+3. **Verify** — you confirm or correct language and customer in the TUI.
+   Nothing expensive runs before this, and the answers are then used as
+   *inputs* by the stages below rather than guessed again by each of them.
+4. **Transcribe + diarize** — runs Whisper (or a fine-tuned variant) in the
+   confirmed language, plus a speaker diarizer, and merges the outputs into a
+   unified transcript with the calendar metadata attached.
+5. **Summarize** — generates a structured meeting summary via a local
    LLM (llama.cpp) or a remote model through Codex, Claude Code, or Gemini CLI.
-5. **Match project/customer** — optionally links the summary to an
-   existing project/customer note in your vault.
-6. **Post to Slack** — posts the meeting abstract to a project Slack
+6. **Publish** — writes the summary into the linked project/customer note.
+7. **Post to Slack** — posts the meeting abstract to a project Slack
    channel, with the full summary (minus personal notes) as a thread reply.
-7. **Enroll speakers** — learn speaker embeddings over time so future
+8. **Enroll speakers** — learn speaker embeddings over time so future
    recordings get named speakers instead of `SPEAKER_01`.
+
+Why the guess comes first: Whisper detects language from the first 30 seconds
+of a recording, which on a meeting that opens with people connecting is 30
+seconds of empty room — that is how a Swedish meeting once got transcribed as
+Dutch. And a customer guessed from a finished summary can only ever contradict
+the person who already knows the answer. Both questions are answerable the
+moment recording stops.
 
 The features are driven from command line utilities, but primary usage is expected to be through the TUI, `hugin-meet-tui` and optionally a desktop integration with a widget.
 
@@ -148,14 +158,16 @@ Transcripts and summaries are written to `meetings.transcripts_dir` and
 models. These files are kept so recordings can be rescanned, reprocessed, or
 used for later speaker enrollment. To purge a single meeting entry from the TUI,
 select it and press `d`; this deletes the raw audio, transcript, summary, cached
-WAVs, and customer-state JSON for that meeting, while leaving project/customer
-notes untouched.
+WAVs, and the context and customer-state JSON for that meeting, while leaving
+project/customer notes untouched.
 
 The summary and project/customer matcher prompts are ordinary Markdown
 templates under `src/hugin_meetings/prompts/`. Set
 `meetings.summarize_prompt_path` or `meetings.project_matcher.prompt_path` to
 use your own versions. Matcher templates can use `{{candidate_context}}`,
-`{{calendar_lines}}`, `{{summary_body}}`, and `{{internal_rules}}`.
+`{{calendar_lines}}`, `{{summary_body}}`, `{{internal_rules}}`, and
+`{{evidence_rules}}` (filled in only when the match is made from the calendar
+alone, before there is any meeting text).
 
 Remote and local command models use `meetings.llm.provider`, which can be
 `codex`, `claude`, `gemini`, or `local`. The default is `codex`. Claude Code
@@ -180,9 +192,12 @@ After activating the venv or installing with `python -m pip install -e .`:
 | Command | What |
 |---------|------|
 | `hugin-meet-record` | Record mic + system audio until Ctrl-C (headless; no frontend needed) |
-| `hugin-meet-transcribe [session-id\|file]` | Transcribe + diarize a recording session |
+| `hugin-meet-context [session-id] [-n N]` | Guess language, calendar event and customer for a session |
+| `hugin-meet-langid [session-id] [-n N]` | Just the language probe, for checking a batch of sessions |
+| `hugin-meet-transcribe [session-id\|file]` | Transcribe + diarize a recording session (requires a context) |
 | `hugin-meet-summarize [transcript]` | Summarize a transcript |
-| `hugin-meet-match-calendar [transcript]` | Attach calendar metadata |
+| `hugin-meet-match-calendar [transcript]` | Attach calendar metadata (`--rematch` to query Google again) |
+| `hugin-meet-link [session-id] [--all]` | Publish a summary into its verified customer note |
 | `hugin-meet-slack-post [summary] [--channel #name]` | Post summary to Slack |
 | `hugin-meet-enroll` | Interactively enroll a new speaker |
 | `hugin-meet-tui` | Interactive curses TUI — drives the whole pipeline |
@@ -238,20 +253,28 @@ Key integration points a frontend needs:
 - Use `hugin_meetings.audio_routes` on Linux/PipeWire to discover mic/system
   audio routes, or provide an OS-specific route provider
 - Use `hugin_meetings.schedule` for journal meeting parsing and reminder state
-- Call `hugin-meet-transcribe <session-id>` when done
-- Read pipeline state via `hugin_meetings.pipeline.scan_raw_audio_sessions()`
+- Read pipeline state via `hugin_meetings.pipeline.scan_recordings()` and
+  `MeetingStatus.needs_pipeline` / `.needs_verification`
+- Hand off processing by launching `hugin-meet-tui`. Frontends do **not** call
+  the stage CLIs themselves — those have ordering requirements, and a session
+  has to be verified by a person before it is processed. Stopping a recording
+  already kicks off the context guess on its own.
 
 ## Layout
 
 ```
 src/hugin_meetings/
   config.py               Config loader (hugin.yaml + meetings.yaml)
-  pipeline.py             Metadata, matching, shared pipeline helpers
+  pipeline.py             Metadata, customer notes, shared pipeline helpers
+  recording.py            Recording primitives used by frontends
+  context.py              First stage: language + calendar + customer, and verification
+  langid.py               Language identification from the audio
   transcribe.py           Whisper + diarization
   transcribe_part.py      Per-part worker (spawned as subprocess)
   summarize.py            LLM summarization
   enroll.py               Speaker enrollment
   calendar_match.py       Google Calendar matching
+  link.py                 Last stage: publishes a summary into its customer note
   tui.py                  Interactive TUI
   slack_post.py           Slack posting
   prompts/                Summary and matcher prompt templates

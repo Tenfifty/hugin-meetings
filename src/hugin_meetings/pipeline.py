@@ -431,6 +431,7 @@ def meeting_artifact_paths(rec: MeetingStatus) -> list[Path]:
     add(rec.transcript_json)
     add(transcript_json_path(rec.timestamp))
     add(customer_state_path(rec.timestamp))
+    add(TRANSCRIPT_JSON_DIR / yyyy / f"context-{rec.timestamp}.json")
     add(rec.transcript_md)
     add(TRANSCRIPT_DIR / yyyy / f"transcript-{rec.timestamp}.md")
     add(rec.summary_md)

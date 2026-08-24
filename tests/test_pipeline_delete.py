@@ -64,6 +64,7 @@ class DeleteMeetingEntryTests(unittest.TestCase):
             self.wav_cache_dir / f"sys-{ts}-p01.wav",
             self.transcript_json_dir / yyyy / f"transcript-{ts}.json",
             self.transcript_json_dir / yyyy / f"transcript-{ts}.customer.json",
+            self.transcript_json_dir / yyyy / f"context-{ts}.json",
             self.transcript_dir / yyyy / f"transcript-{ts}.md",
             self.summary_dir / yyyy / f"summary-{ts}.md",
         ]
