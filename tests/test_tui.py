@@ -51,21 +51,46 @@ def test_language_column_shows_what_will_be_transcribed() -> None:
     context = MeetingContext(
         session_id="20260824-140104",
         language={"value": "sv", "source": "langid", "confidence": 0.98},
+        verified=True,
     )
 
     assert make_tui().language_label(make_status(context=context)) == "sv"
 
 
-def test_a_language_nobody_decided_is_flagged() -> None:
-    """The probe abstained and the configured default stood in — worth a look."""
+def test_an_unverified_language_is_marked_like_an_unverified_customer() -> None:
+    """One meaning per marker: ?? is "you have not looked at this yet"."""
     from hugin_meetings.context import MeetingContext
 
     context = MeetingContext(
         session_id="20260824-140104",
-        language={"value": "sv", "source": "fallback", "note": "no probe cleared"},
+        language={"value": "sv", "source": "langid", "confidence": 0.98},
     )
 
-    assert make_tui().language_label(make_status(context=context)) == "sv?"
+    assert make_tui().language_label(make_status(context=context)) == "??sv??"
+
+
+def test_a_legacy_meeting_verified_by_its_customer_shows_a_plain_language() -> None:
+    from pathlib import Path
+
+    from hugin_meetings import pipeline
+    from hugin_meetings.context import MeetingContext
+
+    state = pipeline.CustomerState(
+        action="link_existing",
+        confidence="high",
+        rationale="Confirmed in the old flow.",
+        model="gpt-5.6-luna",
+        verified=True,
+        customer_name="Helos",
+        customer_path=Path("/vault/kunder/Helos.md"),
+        source="auto",
+    )
+    context = MeetingContext(
+        session_id="20260824-130649", language={"value": "sv", "source": "langid"}
+    )
+
+    label = make_tui().language_label(make_status(context=context, customer_state=state))
+    assert label == "sv"
 
 
 def test_no_context_means_no_language_to_show() -> None:
