@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from .cli_utils import resolve_transcript_md
-from .pipeline import extract_timestamp, transcript_json_for_markdown
+from .pipeline import RawAudioSession, audio_duration, extract_timestamp, transcript_json_for_markdown
 from .config import load_config
 
 TRANSCRIPT_DIR = load_config().transcripts_dir
@@ -63,12 +63,19 @@ def local_tzinfo():
 
 
 @dataclass
-class TranscriptInfo:
-    md_path: Path
+class MatchWindow:
+    """The stretch of wall clock a recording covers.
+
+    Scoring only ever needed start/end/duration plus optional text for the
+    title-keyword bonus, so the window can come from a finished transcript or
+    straight from the raw audio — the latter lets the calendar be matched
+    before transcription runs.
+    """
+
     start: datetime
     end: datetime
     duration: timedelta
-    text: str
+    text: str = ""
 
 
 @dataclass
@@ -119,12 +126,67 @@ def transcript_duration(path: Path, text: str) -> timedelta:
     raise GwsError(f"Could not determine transcript duration from {path.name}")
 
 
-def load_transcript(path: Path) -> TranscriptInfo:
+def load_transcript(path: Path) -> MatchWindow:
     text = path.read_text()
     start = transcript_start_from_name(path)
     duration = transcript_duration(path, text)
-    end = start + duration
-    return TranscriptInfo(path, start, end, duration, text)
+    return MatchWindow(start, start + duration, duration, text)
+
+
+def session_window(session: "RawAudioSession") -> MatchWindow:
+    """The window a raw recording session covers, before any transcript exists.
+
+    Duration is the summed wall clock of the parts of the longer channel;
+    parts are recorded back to back, so their total is the meeting's length.
+    """
+    start = datetime.strptime(session.session_id, "%Y%m%d-%H%M%S").replace(tzinfo=local_tzinfo())
+    seconds = max(
+        sum(audio_duration(path) for path in session.mic_parts),
+        sum(audio_duration(path) for path in session.sys_parts),
+    )
+    if seconds <= 0:
+        raise GwsError(f"No audio duration for session {session.session_id}")
+    duration = timedelta(seconds=seconds)
+    return MatchWindow(start, start + duration, duration)
+
+
+def match_window(
+    window: MatchWindow,
+    *,
+    calendar: str | None = None,
+    include_shared: bool = False,
+    lookback: timedelta = DEFAULT_LOOKBACK,
+    lookahead: timedelta = DEFAULT_LOOKAHEAD,
+) -> tuple[list[Candidate], list[dict[str, Any]]]:
+    """Candidates for a window, best first, plus the calendars searched."""
+    calendars = list_calendars(calendar, include_shared)
+    return collect_candidates(window, calendars, lookback, lookahead), calendars
+
+
+def event_fields(candidate: Candidate) -> dict[str, Any]:
+    """The event as the context object stores it.
+
+    Attendees stay raw and untruncated here — unlike the transcript metadata
+    block, the customer matcher wants every mail domain it can get.
+    """
+    event = candidate.event
+    organizer = event.get("organizer", {})
+    return {
+        "summary": event.get("summary") or "",
+        "start": format_dt(candidate.event_start),
+        "end": format_dt(candidate.event_end),
+        "response": response_label(candidate.response_status),
+        "organizer": organizer.get("email") or organizer.get("displayName") or "",
+        "attendees": [
+            attendee.get("email") or attendee.get("displayName") or ""
+            for attendee in event.get("attendees", [])
+        ],
+        "location": clean_location(event.get("location")),
+        "description": clean_description(event.get("description")),
+        "calendar_id": candidate.calendar_id,
+        "score": round(candidate.score, 1),
+        "confidence": confidence_label(candidate.score),
+    }
 
 
 def gws_environment() -> dict[str, str]:
@@ -326,7 +388,7 @@ def overlap_seconds(
 def score_event(
     event: dict[str, Any],
     calendar: dict[str, Any],
-    transcript: TranscriptInfo,
+    window: MatchWindow,
 ) -> Candidate | None:
     if event.get("status") == "cancelled":
         return None
@@ -339,14 +401,14 @@ def score_event(
     reasons: list[str] = []
     response_status = event_self_response_status(event)
     reasons.append(f"response {response_label(response_status)}")
-    overlap = overlap_seconds(event_start, event_end, transcript.start, transcript.end)
-    min_overlap = transcript.duration.total_seconds() * MIN_OVERLAP_FRACTION
+    overlap = overlap_seconds(event_start, event_end, window.start, window.end)
+    min_overlap = window.duration.total_seconds() * MIN_OVERLAP_FRACTION
     if overlap <= min_overlap:
         return None
 
-    start_delta = abs((event_start - transcript.start).total_seconds()) / 60
+    start_delta = abs((event_start - window.start).total_seconds()) / 60
     duration_delta = abs(
-        ((event_end - event_start) - transcript.duration).total_seconds()
+        ((event_end - event_start) - window.duration).total_seconds()
     ) / 60
 
     overlap_minutes = overlap / 60
@@ -365,8 +427,8 @@ def score_event(
 
     summary = event.get("summary", "")
     summary_tokens = tokenize(summary)
-    transcript_tokens = tokenize(transcript.text[:8000])
-    token_hits = len(summary_tokens & transcript_tokens)
+    window_tokens = tokenize(window.text[:8000])
+    token_hits = len(summary_tokens & window_tokens)
     if token_hits:
         token_bonus = min(token_hits * 6.0, 24.0)
         score += token_bonus
@@ -518,14 +580,14 @@ def clean_description(text: str | None) -> str:
 
 
 def render_metadata(
-    transcript: TranscriptInfo,
+    window: MatchWindow,
     candidates: list[Candidate],
     searched_calendars: list[dict[str, Any]],
 ) -> str:
     lines = [
         METADATA_START,
         "## Calendar Metadata",
-        f"- Transcript window: {format_dt(transcript.start)} to {format_dt(transcript.end)}",
+        f"- Transcript window: {format_dt(window.start)} to {format_dt(window.end)}",
     ]
 
     if candidates:
@@ -536,7 +598,7 @@ def render_metadata(
 
     lines.extend(
         [
-        f"- Transcript duration: {int(transcript.duration.total_seconds() // 60)} minutes",
+        f"- Transcript duration: {int(window.duration.total_seconds() // 60)} minutes",
         ]
     )
 
@@ -598,13 +660,13 @@ def update_transcript_markdown(path: Path, metadata_block: str) -> str:
 
 
 def collect_candidates(
-    transcript: TranscriptInfo,
+    window: MatchWindow,
     calendars: list[dict[str, Any]],
     lookback: timedelta,
     lookahead: timedelta,
 ) -> list[Candidate]:
-    time_min = transcript.start - lookback
-    time_max = transcript.end + lookahead
+    time_min = window.start - lookback
+    time_max = window.end + lookahead
     candidates: list[Candidate] = []
     for calendar in calendars:
         calendar_id = calendar["id"]
@@ -614,7 +676,7 @@ def collect_candidates(
             print(f"Warning: skipping calendar {calendar_id}: {exc}", file=sys.stderr)
             continue
         for event in events:
-            candidate = score_event(event, calendar, transcript)
+            candidate = score_event(event, calendar, window)
             if candidate is not None:
                 candidates.append(candidate)
     return dedupe_candidates(candidates)
@@ -656,15 +718,15 @@ def main() -> int:
 
     try:
         transcript_path = resolve_transcript(args.transcript)
-        transcript = load_transcript(transcript_path)
-        calendars = list_calendars(args.calendar, args.include_shared_calendars)
-        candidates = collect_candidates(
-            transcript,
-            calendars,
+        window = load_transcript(transcript_path)
+        candidates, calendars = match_window(
+            window,
+            calendar=args.calendar,
+            include_shared=args.include_shared_calendars,
             lookback=timedelta(hours=args.lookback_hours),
             lookahead=timedelta(hours=args.lookahead_hours),
         )
-        metadata_block = render_metadata(transcript, candidates, calendars)
+        metadata_block = render_metadata(window, candidates, calendars)
     except GwsError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -679,15 +741,15 @@ def main() -> int:
         print(metadata_block)
         return 0
 
-    update_transcript_markdown(transcript.md_path, metadata_block)
+    update_transcript_markdown(transcript_path, metadata_block)
     if candidates:
         best = candidates[0]
         print(
-            f"Annotated {transcript.md_path.name} with {best.event.get('summary') or '(untitled)'} "
+            f"Annotated {transcript_path.name} with {best.event.get('summary') or '(untitled)'} "
             f"[{confidence_label(best.score)} confidence]"
         )
     else:
-        print(f"Annotated {transcript.md_path.name} with 'no plausible match found'")
+        print(f"Annotated {transcript_path.name} with 'no plausible match found'")
     return 0
 
 

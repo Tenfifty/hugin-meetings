@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -286,6 +287,25 @@ def year_subdir(name_or_ts: str) -> str:
 
 def relative_link(target: Path, base_dir: Path) -> str:
     return os.path.relpath(target, base_dir)
+
+
+def audio_duration(path: Path | None) -> float:
+    """Wall-clock seconds of an audio file, via ffprobe. 0.0 for a missing path."""
+    if path is None:
+        return 0.0
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return float(result.stdout.strip() or "0")
 
 
 def transcript_json_path(ts: str) -> Path:
@@ -691,11 +711,37 @@ def _render_customer_prompt_template(template: str, values: dict[str, str]) -> s
 def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[CustomerNote]]:
     summary_text = summary_path.read_text()
     summary_body = _strip_customer_header_link(summary_text)
-    summary_body = summary_body.strip()[:MAX_MEETING_TEXT]
 
     ts = extract_timestamp(summary_path.name)
     transcript_path = TRANSCRIPT_DIR / f"transcript-{ts}.md"
     calendar_fields = parse_calendar_metadata(transcript_path if transcript_path.exists() else None)
+    return build_customer_prompt_from(calendar_fields, summary_body)
+
+
+def build_customer_prompt_from(
+    calendar_fields: dict[str, str], meeting_text: str
+) -> tuple[str, list[CustomerNote]]:
+    """Render the matcher prompt from whatever the caller knows about a meeting.
+
+    Before transcription that is the calendar event alone; afterwards the
+    summary body carries most of the signal. Same template either way, so the
+    two stages cannot drift apart.
+    """
+    has_text = bool(meeting_text.strip())
+    summary_body = (
+        meeting_text.strip()[:MAX_MEETING_TEXT]
+        if has_text
+        else "(not transcribed yet — judge from the calendar event above)"
+    )
+    # Without this the model reads "Meeting text: (not transcribed yet)" as
+    # missing evidence and abstains, however clear the event is.
+    evidence_rules = "" if has_text else (
+        "- There is no meeting text yet. The calendar event is the complete evidence base: "
+        "judge from its title, description, organizer and the attendees' mail domains, and do "
+        "not abstain merely because no summary exists.\n"
+        "- An external organization named in the title, or owning an attendee's mail domain, "
+        "is concrete evidence. So is a customer named in the title of an otherwise internal meeting.\n"
+    )
 
     calendar_lines = "\n".join(
         f"- {key}: {value}" for key, value in calendar_fields.items()
@@ -725,6 +771,7 @@ def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[Cus
         _load_customer_prompt_template(),
         {
             "internal_rules": internal_rules,
+            "evidence_rules": evidence_rules,
             "candidate_context": candidate_context,
             "calendar_lines": calendar_lines,
             "summary_body": summary_body,
@@ -829,6 +876,30 @@ def suggest_customer_link(
     effort: str = DEFAULT_CUSTOMER_EFFORT,
 ) -> CustomerDecision:
     prompt, candidates = build_customer_prompt(summary_path, model)
+    return decide_customer(prompt, candidates, model, effort)
+
+
+def suggest_customer_from_calendar(
+    calendar_fields: dict[str, str],
+    model: str = DEFAULT_CUSTOMER_MODEL,
+    effort: str = DEFAULT_CUSTOMER_EFFORT,
+) -> CustomerDecision:
+    """Match a meeting from its calendar event alone, before it is transcribed.
+
+    The event carries the mail domains, the title and the description, which is
+    usually enough to name the customer — and when it is not, the guess is
+    unverified anyway and the operator gets to correct it.
+    """
+    prompt, candidates = build_customer_prompt_from(calendar_fields, "")
+    return decide_customer(prompt, candidates, model, effort)
+
+
+def decide_customer(
+    prompt: str,
+    candidates: list[CustomerNote],
+    model: str = DEFAULT_CUSTOMER_MODEL,
+    effort: str = DEFAULT_CUSTOMER_EFFORT,
+) -> CustomerDecision:
     if model in summarize_tool.LOCAL_MODELS:
         payload = run_local_json_prompt(model, prompt)
     else:

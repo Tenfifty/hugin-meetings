@@ -24,6 +24,7 @@ from pathlib import Path
 from .cli_utils import get_hf_token
 from .pipeline import (
     SPEAKER_RE,
+    audio_duration,
     extract_timestamp,
     is_backchannel,
     parse_raw_audio_part,
@@ -740,24 +741,7 @@ def _describe_parts(paths: list[Path]) -> str:
 
 
 def _audio_duration(path: Path | None) -> float:
-    if path is None:
-        return 0.0
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return float(result.stdout.strip() or "0")
+    return audio_duration(path)
 
 
 def _offset_entries(entries: list[dict], offset_seconds: float) -> list[dict]:

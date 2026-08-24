@@ -1,8 +1,8 @@
-You match a meeting summary to a project/customer note.
+You match a meeting to a project/customer note.
 
 Rules:
 - Prefer an existing project whenever the meeting is about that project, for that project, in preparation for that project, or about work likely to be delivered to that project.
-{{internal_rules}}- Prefer an existing project only when there is concrete evidence.
+{{internal_rules}}{{evidence_rules}}- Prefer an existing project only when there is concrete evidence.
 - If the meeting seems project-related but no existing project matches well enough, use action "suggest_new".
 - Use action "no_match" only when even a new-project suggestion would be too speculative.
 - Keep the rationale short and evidence-based.
@@ -22,5 +22,5 @@ Known customers:
 Calendar metadata:
 {{calendar_lines}}
 
-Meeting summary:
+Meeting text:
 {{summary_body}}

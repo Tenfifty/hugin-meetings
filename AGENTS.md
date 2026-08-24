@@ -100,7 +100,7 @@ Summary + project-matcher prompts are plain Markdown templates in `src/hugin_mee
 2. `<base>_<lang>.md` for the active language (e.g. `summary_sv.md`).
 3. `<base>_default.md` (English fallback, always shipped).
 
-Files suffixed `.example.md` are starter templates for users to copy — they are never auto-picked. Matcher templates interpolate `{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, `{{internal_rules}}`.
+Files suffixed `.example.md` are starter templates for users to copy — they are never auto-picked. Matcher templates interpolate `{{candidate_context}}`, `{{calendar_lines}}`, `{{summary_body}}`, `{{internal_rules}}`, `{{evidence_rules}}`.
 
 ### Frontend integration contract
 
