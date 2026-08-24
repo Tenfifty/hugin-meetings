@@ -785,6 +785,7 @@ def process_part(
                 MODEL,
                 dev,
                 compute_type="float16" if dev == "cuda" else "int8",
+                language=language,
             )
 
     def _run_whisper(audio_part: Path):
@@ -807,7 +808,7 @@ def process_part(
             model = _load_whisper(device)
             return transcribe(audio_part, model, device, language)
 
-    print(f"  Loading model: {MODEL}")
+    print(f"  Loading model: {MODEL} (language: {language})")
     try:
         try:
             model = _load_whisper(device)
