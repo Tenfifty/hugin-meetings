@@ -87,8 +87,6 @@ class AudioTui:
             elif key in (ord("r"), ord("R")):
                 self.refresh()
                 self.set_message("Refreshed meeting list.")
-            elif key in (ord("p"), ord("P")):
-                self.process_pending(stdscr)
             elif key in (ord("l"), ord("L")):
                 rec = self.selected_recording()
                 if rec:
@@ -127,14 +125,14 @@ class AudioTui:
         h, w = stdscr.getmaxyx()
 
         unverified = sum(1 for rec in self.recordings if rec.needs_verification)
-        ready = sum(1 for rec in self.recordings if rec.ready_for_pipeline)
+        unprocessed = sum(1 for rec in self.recordings if rec.ready_for_pipeline)
         header = (
             f"Hugin Audio TUI  |  meetings: {len(self.recordings)}  "
-            f"needs verification: {unverified}  ready to process: {ready}"
+            f"to verify: {unverified}  verified, not processed: {unprocessed}"
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
-        info = "Enter: open/verify  a: accept + process  p: process all verified  v: accept  x: remove customer  d: delete entry  r: refresh  q: quit"
+        info = "Enter: open/verify  a: accept + process  v: accept only  x: no customer  d: delete entry  r: refresh  q: quit"
         stdscr.addstr(1, 0, info[: w - 1], curses.A_DIM)
 
         table_top = 3
@@ -355,33 +353,6 @@ class AudioTui:
                 break
             stdscr.addstr(idx, 0, line[: w - 1])
         stdscr.refresh()
-
-    def process_pending(self, stdscr) -> None:
-        pending = [rec for rec in reversed(self.recordings) if rec.ready_for_pipeline]
-        unverified = sum(1 for rec in self.recordings if rec.needs_verification)
-        if not pending:
-            if unverified:
-                self.set_message(f"{unverified} recording(s) need verification first (v).")
-            else:
-                self.set_message("No pending recordings.")
-            return
-
-        total = len(pending)
-        for idx, rec in enumerate(pending, start=1):
-            self.set_message(f"Processing {idx}/{total}: {rec.timestamp}")
-            try:
-                for title, cmd in self.pending_commands(rec):
-                    self.run_command(stdscr, f"[{idx}/{total}] {title}", cmd)
-                self.refresh()
-                self.append_log(f"Finished pipeline for {rec.timestamp}")
-            except Exception as exc:
-                self.append_log(f"ERROR: {exc}")
-                self.set_message(str(exc))
-                break
-            finally:
-                self.refresh()
-        else:
-            self.set_message(f"Processed {total} pending recording(s).")
 
     def find_recording(self, timestamp: str) -> audio_pipeline.MeetingStatus | None:
         for rec in self.recordings:
