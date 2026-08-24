@@ -64,7 +64,8 @@ class MeetingContext:
 
     @property
     def event_title(self) -> str:
-        return (self.calendar or {}).get("summary") or ""
+        candidate = best_candidate(self)
+        return (candidate.event.get("summary") or "") if candidate else ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +119,55 @@ def mark_verified(context: MeetingContext) -> MeetingContext:
     return context
 
 
+def verify(
+    context: MeetingContext,
+    *,
+    language: str | None = None,
+    customer: pipeline.CustomerState | None = None,
+) -> MeetingContext:
+    """Record a person's decision about a session, and act on it.
+
+    This is the single write point for a verified meeting: it stamps the
+    context and materializes the customer state that every later stage reads.
+    Creating a customer note happens here, as the direct consequence of a
+    person choosing to create one — never as a side effect further down.
+    """
+    if language and language != context.language.get("value"):
+        context.language = {
+            **context.language,
+            "value": language,
+            "source": "manual",
+        }
+    if customer is not None:
+        customer.verified = True
+        customer = pipeline.materialize_verified_customer_state(customer)
+        context.customer = pipeline.serialize_customer_state(customer)
+        pipeline.save_customer_state(context.session_id, customer)
+    mark_verified(context)
+    save_context(context)
+    return context
+
+
+def customer_state(context: MeetingContext) -> pipeline.CustomerState | None:
+    if not context.customer:
+        return None
+    return pipeline.deserialize_customer_state(context.customer)
+
+
+def record_applied(ts: str, **fields: Any) -> MeetingContext | None:
+    """Note what a stage actually used, so a later change shows up as a drift.
+
+    The transcript JSON is a bare list read positionally in several modules and
+    cannot carry metadata, so the context keeps this instead.
+    """
+    context = load_context(ts)
+    if context is None:
+        return None
+    context.applied = {**(context.applied or {}), **fields}
+    save_context(context)
+    return context
+
+
 def _guess_calendar(session: pipeline.RawAudioSession) -> tuple[dict[str, Any] | None, str]:
     from . import calendar_match
 
@@ -130,29 +180,47 @@ def _guess_calendar(session: pipeline.RawAudioSession) -> tuple[dict[str, Any] |
         return None, "gws not found on PATH"
     if not candidates:
         return None, "no plausible calendar event"
-    return calendar_match.event_fields(candidates[0]), ""
-
-
-def _calendar_lines(event: dict[str, Any] | None) -> dict[str, str]:
-    """The event as the matcher prompt wants it: the same keys the transcript
-    metadata block uses, so both stages present the same shape to the model."""
-    if not event:
-        return {}
+    # Keep the alternatives too: they are what the metadata block lists, and
+    # what a person needs when the best match is the wrong meeting.
     return {
-        "Event": event.get("summary") or "(untitled)",
-        "Event time": f"{event.get('start', '')} to {event.get('end', '')}",
-        "Response": event.get("response", ""),
-        "Organizer": event.get("organizer", ""),
-        "Attendees": ", ".join(event.get("attendees") or []),
-        "Location": event.get("location", ""),
-        "Description": event.get("description", ""),
-    }
+        "window": calendar_match.serialize_window(window),
+        "candidates": [calendar_match.serialize_candidate(c) for c in candidates[:4]],
+    }, ""
 
 
-def _guess_customer(event: dict[str, Any] | None, model: str) -> dict[str, Any] | None:
-    if not event:
+def best_candidate(context: "MeetingContext"):
+    from . import calendar_match
+
+    payload = (context.calendar or {}).get("candidates") or []
+    if not payload:
         return None
-    decision = pipeline.suggest_customer_from_calendar(_calendar_lines(event), model)
+    return calendar_match.deserialize_candidate(payload[0])
+
+
+def calendar_block(context: "MeetingContext") -> str:
+    """This session's metadata block, rendered from the stored match."""
+    from . import calendar_match
+
+    payload = context.calendar or {}
+    if not payload.get("window") or not payload.get("candidates"):
+        return ""
+    window = calendar_match.deserialize_window(payload["window"])
+    candidates = [calendar_match.deserialize_candidate(c) for c in payload["candidates"]]
+    return calendar_match.render_metadata(window, candidates, [])
+
+
+def calendar_fields(context: "MeetingContext") -> dict[str, str]:
+    """The event as key/value pairs, for the matcher prompt and for display."""
+    from . import calendar_match
+
+    block = calendar_block(context)
+    return calendar_match.metadata_fields(block) if block else {}
+
+
+def _guess_customer(fields: dict[str, str], model: str) -> dict[str, Any] | None:
+    if not fields:
+        return None
+    decision = pipeline.suggest_customer_from_calendar(fields, model)
     state = pipeline.state_from_decision(decision, source="calendar")
     return pipeline.serialize_customer_state(state)
 
@@ -182,7 +250,7 @@ def build_context(
     # be guessing from nothing, so leave the customer for the operator instead.
     if context.calendar and not skip_customer:
         context.customer = _guess_customer(
-            context.calendar, model or pipeline.DEFAULT_CUSTOMER_MODEL
+            calendar_fields(context), model or pipeline.DEFAULT_CUSTOMER_MODEL
         )
     return context
 

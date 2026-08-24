@@ -54,24 +54,6 @@ ALIGN_MODELS = {
     **(load_config().raw.get("meetings", {}).get("transcribe_align_models") or {}),
 }
 
-# Whisper detects language from the first 30s of each channel, which on a quiet
-# or small-talk opening routinely lands on Norwegian for Swedish speech at
-# ~0.5 confidence. That costs twice: the transcript decodes in the wrong
-# language, and whisperx's default align model for ``no``/``nn`` is a 1B
-# wav2vec2 (3.85 GB) that does not fit on an 8 GB card next to large-v3, so the
-# whole part falls back to CPU. Collapse Norwegian onto Swedish — mixed sv/no
-# meetings are read in Swedish anyway, and it keeps detection to a stable sv/en
-# split. Override via ``meetings.transcribe_language_aliases: {<detected>:
-# <forced>}`` in config.
-DEFAULT_LANGUAGE_ALIASES = {
-    "no": "sv",
-    "nb": "sv",
-    "nn": "sv",
-}
-LANGUAGE_ALIASES = {
-    **DEFAULT_LANGUAGE_ALIASES,
-    **(load_config().raw.get("meetings", {}).get("transcribe_language_aliases") or {}),
-}
 DEFAULT_DIARIZER = "nemo"
 # NeMo's default MSDD inference batch (25) OOMs on a 65 min part; 4 fits with
 # ~1.4 GB spare and diarizes 6.3x faster than the CPU fallback it replaces.
@@ -209,21 +191,18 @@ def is_silent(path: Path) -> bool:
         return False
 
 
-def transcribe(audio_path: Path, model, device: str) -> dict:
-    """Transcribe a single audio file. Returns whisperx result dict."""
+def transcribe(audio_path: Path, model, device: str, language: str) -> dict:
+    """Transcribe a single audio file in a known language. Returns whisperx result dict.
+
+    The language is decided by the context stage and confirmed by a person, so
+    whisper is never asked to guess it here — its own detection reads the first
+    30 seconds of the file, which on a meeting that opens with people connecting
+    is 30 seconds of empty room.
+    """
     import torch
     import whisperx
 
     audio = whisperx.load_audio(str(audio_path))
-
-    # Resolve the language before transcribing rather than reading it off the
-    # result, so LANGUAGE_ALIASES can redirect a detection we don't trust.
-    # Passing it explicitly also skips whisperx's own detection pass.
-    language = model.detect_language(audio)
-    alias = LANGUAGE_ALIASES.get(language)
-    if alias and alias != language:
-        print(f"    Detected {language}, transcribing as {alias}")
-        language = alias
 
     for batch_size in (8, 4, 2):
         try:
@@ -785,6 +764,7 @@ def process_part(
     *,
     part_index: int,
     use_part_suffix: bool,
+    language: str,
     do_diarize: bool = True,
     diarizer_name: str = DEFAULT_DIARIZER,
 ) -> list[dict]:
@@ -810,7 +790,7 @@ def process_part(
     def _run_whisper(audio_part: Path):
         nonlocal model, device, diarization_device
         try:
-            return transcribe(audio_part, model, device)
+            return transcribe(audio_part, model, device, language)
         except Exception as exc:
             if not _is_oom(exc) or device != "cuda":
                 raise
@@ -825,7 +805,7 @@ def process_part(
             device = "cpu"
             diarization_device = "cpu"
             model = _load_whisper(device)
-            return transcribe(audio_part, model, device)
+            return transcribe(audio_part, model, device, language)
 
     print(f"  Loading model: {MODEL}")
     try:
@@ -989,9 +969,20 @@ def process_part(
 
 def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str = DEFAULT_DIARIZER):
     """Process a single recording session, possibly spanning multiple rotated parts."""
+    from . import context as meeting_context
+
     session = raw_audio_session(session_id)
     if session is None or not session.mic_parts:
         raise RuntimeError(f"No mic recording parts found for session {session_id}")
+
+    # The context is the contract: it decides the language, and a person has
+    # normally confirmed it. Transcribing without one means guessing again.
+    context = meeting_context.load_context(session_id)
+    if context is None:
+        raise RuntimeError(
+            f"No context for {session_id} — run hugin-meet-context {session_id} first"
+        )
+    language = context.language_value
 
     from .pipeline import year_subdir
 
@@ -1038,6 +1029,8 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
                 str(tmp_path),
                 "--diarizer",
                 diarizer_name,
+                "--language",
+                language,
             ]
             if sys_part is not None:
                 cmd.extend(["--sys", str(sys_part)])
@@ -1059,6 +1052,8 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
 
     out_md.write_text(format_transcript(session_entries, session_id))
     print(f"  Wrote {out_md}")
+
+    meeting_context.record_applied(session_id, language=language)
 
 
 def find_unprocessed() -> list[str]:

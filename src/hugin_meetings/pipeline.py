@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from hugin.llm import run_prompt
 from hugin.prompts import resolve_prompt
@@ -186,6 +186,7 @@ class MeetingStatus:
     calendar_fields: dict[str, str]
     customer_state: CustomerState | None
     anonymous_speakers: list[str]
+    context: Any | None = None
 
     @property
     def has_transcript(self) -> bool:
@@ -202,6 +203,29 @@ class MeetingStatus:
         )
 
     @property
+    def has_context(self) -> bool:
+        return self.context is not None
+
+    @property
+    def is_verified(self) -> bool:
+        """A person has confirmed language and customer for this session."""
+        return bool(self.context and self.context.verified)
+
+    @property
+    def needs_verification(self) -> bool:
+        return not self.is_verified
+
+    @property
+    def needs_link(self) -> bool:
+        """Summarized and bound to a customer, but not published into the note yet."""
+        if not self.has_summary:
+            return False
+        state = self.customer_state
+        if state is None or not state.verified or state.action != "link_existing":
+            return False
+        return parse_customer_metadata(self.summary_md) is None
+
+    @property
     def has_customer_guess(self) -> bool:
         return self.customer_state is not None
 
@@ -214,28 +238,32 @@ class MeetingStatus:
         )
 
     @property
+    def pipeline_steps(self) -> list[bool]:
+        """The stages in order: verified context, transcript, calendar, summary, link."""
+        return [
+            self.is_verified,
+            self.has_transcript,
+            self.has_calendar_metadata,
+            self.has_summary,
+            self.has_summary and not self.needs_link,
+        ]
+
+    @property
     def pipeline_steps_complete(self) -> int:
-        return sum(
-            [
-                self.has_transcript,
-                self.has_calendar_metadata,
-                self.has_summary,
-                self.has_customer_guess,
-            ]
-        )
+        return sum(self.pipeline_steps)
 
     @property
     def pipeline_total_steps(self) -> int:
-        return 4
+        return len(self.pipeline_steps)
 
     @property
     def needs_pipeline(self) -> bool:
-        return not (
-            self.has_transcript
-            and self.has_calendar_metadata
-            and self.has_summary
-            and self.has_customer_guess
-        )
+        return not all(self.pipeline_steps)
+
+    @property
+    def ready_for_pipeline(self) -> bool:
+        """Nothing expensive runs on a session a person has not confirmed."""
+        return self.is_verified and self.needs_pipeline
 
     @property
     def needs_enrollment(self) -> bool:
@@ -258,13 +286,10 @@ class MeetingStatus:
 
     @property
     def short_status(self) -> str:
-        flags = [
-            "T" if self.has_transcript else ".",
-            "C" if self.has_calendar_metadata else ".",
-            "S" if self.has_summary else ".",
-            "G" if self.has_customer_guess else ".",
-        ]
-        return "".join(flags)
+        return "".join(
+            letter if done else "."
+            for letter, done in zip("VTCSL", self.pipeline_steps)
+        )
 
 
 def extract_timestamp(name: str) -> str | None:
@@ -646,6 +671,10 @@ def load_anonymous_speakers(path: Path | None) -> list[str]:
 
 
 def scan_recordings() -> list[MeetingStatus]:
+    # Imported here: context builds on pipeline, so the dependency only runs
+    # one way at import time.
+    from . import context as meeting_context
+
     raw_sessions = scan_raw_audio_sessions()
     timestamps: set[str] = set(raw_sessions)
 
@@ -687,6 +716,7 @@ def scan_recordings() -> list[MeetingStatus]:
                 calendar_fields=parse_calendar_metadata(transcript_md if transcript_md.exists() else None),
                 customer_state=load_customer_state(ts, summary_md if summary_md.exists() else None),
                 anonymous_speakers=load_anonymous_speakers(transcript_json if transcript_json.exists() else None),
+                context=meeting_context.load_context(ts),
             )
         )
     return meetings
@@ -706,16 +736,6 @@ def _render_customer_prompt_template(template: str, values: dict[str, str]) -> s
     for key, value in values.items():
         template = template.replace("{{" + key + "}}", value)
     return template
-
-
-def build_customer_prompt(summary_path: Path, model: str) -> tuple[str, list[CustomerNote]]:
-    summary_text = summary_path.read_text()
-    summary_body = _strip_customer_header_link(summary_text)
-
-    ts = extract_timestamp(summary_path.name)
-    transcript_path = TRANSCRIPT_DIR / f"transcript-{ts}.md"
-    calendar_fields = parse_calendar_metadata(transcript_path if transcript_path.exists() else None)
-    return build_customer_prompt_from(calendar_fields, summary_body)
 
 
 def build_customer_prompt_from(
@@ -868,15 +888,6 @@ def materialize_verified_customer_state(state: CustomerState) -> CustomerState:
         return state
 
     return state
-
-
-def suggest_customer_link(
-    summary_path: Path,
-    model: str = DEFAULT_CUSTOMER_MODEL,
-    effort: str = DEFAULT_CUSTOMER_EFFORT,
-) -> CustomerDecision:
-    prompt, candidates = build_customer_prompt(summary_path, model)
-    return decide_customer(prompt, candidates, model, effort)
 
 
 def suggest_customer_from_calendar(
@@ -1241,54 +1252,6 @@ def manual_new_customer_state(
         suggested_name=suggested_name,
         source="manual",
     )
-
-
-def state_for_summary(summary_path: Path) -> CustomerState | None:
-    ts = extract_timestamp(summary_path.name)
-    if not ts:
-        return None
-    return load_customer_state(ts, summary_path)
-
-
-def guess_customer_state(summary_path: Path, model: str = DEFAULT_CUSTOMER_MODEL) -> CustomerState:
-    decision = suggest_customer_link(summary_path, model)
-    state = state_from_decision(decision, verified=False, source="auto")
-    ts = extract_timestamp(summary_path.name)
-    if not ts:
-        raise ValueError(f"Could not determine timestamp from {summary_path.name}")
-    save_customer_state(ts, state)
-    clear_customer_metadata(summary_path)
-    return state
-
-
-def verify_customer_state(summary_path: Path) -> CustomerState:
-    ts = extract_timestamp(summary_path.name)
-    if not ts:
-        raise ValueError(f"Could not determine timestamp from {summary_path.name}")
-    state = load_customer_state(ts, summary_path)
-    if state is None:
-        raise ValueError("No cached customer suggestion to verify.")
-    state.verified = True
-    state = materialize_verified_customer_state(state)
-    save_customer_state(ts, state)
-    write_customer_metadata(summary_path, metadata_from_state(summary_path, state))
-    return state
-
-
-def save_customer_state_and_sync_summary(
-    summary_path: Path,
-    state: CustomerState,
-) -> CustomerState:
-    ts = extract_timestamp(summary_path.name)
-    if not ts:
-        raise ValueError(f"Could not determine timestamp from {summary_path.name}")
-    state = materialize_verified_customer_state(state)
-    save_customer_state(ts, state)
-    if state.verified:
-        write_customer_metadata(summary_path, metadata_from_state(summary_path, state))
-    else:
-        clear_customer_metadata(summary_path)
-    return state
 
 
 def remove_customer_link(summary_path: Path) -> None:

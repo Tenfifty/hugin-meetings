@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sys", help="Matching system-audio part opus file")
     parser.add_argument("--part-index", required=True, type=int, help="Part index (1-based)")
     parser.add_argument("--json-out", required=True, help="Where to write merged part entries")
+    parser.add_argument("--language", required=True, help="Language to transcribe in, from the session context")
     parser.add_argument("--use-part-suffix", action="store_true", help="Suffix anonymous speakers with the part id")
     parser.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     parser.add_argument(
@@ -38,6 +39,7 @@ def main() -> int:
         Path(args.sys) if args.sys else None,
         part_index=args.part_index,
         use_part_suffix=args.use_part_suffix,
+        language=args.language,
         do_diarize=not args.no_diarize,
         diarizer_name=args.diarizer,
     )

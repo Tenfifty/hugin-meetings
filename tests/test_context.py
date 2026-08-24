@@ -30,7 +30,28 @@ class ContextRoundTripTests(unittest.TestCase):
         return meeting_context.MeetingContext(
             session_id="20260824-140104",
             language={"value": "sv", "confidence": 0.98, "source": "langid", "probes": []},
-            calendar={"summary": "Notana och AI", "attendees": ["amer@notanacare.io"]},
+            calendar={
+                "window": {
+                    "start": "2026-08-24T14:01:04+02:00",
+                    "end": "2026-08-24T14:35:04+02:00",
+                    "duration_seconds": 2040.0,
+                },
+                "candidates": [
+                    {
+                        "calendar_id": "primary",
+                        "calendar_name": "Me",
+                        "event": {
+                            "summary": "Notana och AI",
+                            "attendees": [{"email": "amer@notanacare.io"}],
+                        },
+                        "event_start": "2026-08-24T14:00:00+02:00",
+                        "event_end": "2026-08-24T14:30:00+02:00",
+                        "response_status": "accepted",
+                        "score": 138.4,
+                        "reasons": ["overlap 29m"],
+                    }
+                ],
+            },
             customer={
                 "action": "link_existing",
                 "confidence": "high",
@@ -50,6 +71,11 @@ class ContextRoundTripTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.language_value, "sv")
         self.assertEqual(loaded.event_title, "Notana och AI")
+        block = meeting_context.calendar_block(loaded)
+        self.assertIn("- Event: Notana och AI", block)
+        self.assertEqual(
+            meeting_context.calendar_fields(loaded)["Event"], "Notana och AI"
+        )
         self.assertFalse(loaded.verified)
         self.assertEqual(json.loads(saved.read_text())["version"], meeting_context.CONTEXT_VERSION)
 

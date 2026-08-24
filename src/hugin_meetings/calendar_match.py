@@ -163,30 +163,83 @@ def match_window(
     return collect_candidates(window, calendars, lookback, lookahead), calendars
 
 
-def event_fields(candidate: Candidate) -> dict[str, Any]:
-    """The event as the context object stores it.
+def serialize_candidate(candidate: Candidate) -> dict[str, Any]:
+    """Store a match so it can be rendered later without asking Google again.
 
-    Attendees stay raw and untruncated here — unlike the transcript metadata
-    block, the customer matcher wants every mail domain it can get.
+    The whole event is kept rather than a flattened summary: the metadata block
+    and the customer matcher each want fields the other does not, and keeping
+    one representation means it cannot drift from itself.
     """
-    event = candidate.event
-    organizer = event.get("organizer", {})
     return {
-        "summary": event.get("summary") or "",
-        "start": format_dt(candidate.event_start),
-        "end": format_dt(candidate.event_end),
-        "response": response_label(candidate.response_status),
-        "organizer": organizer.get("email") or organizer.get("displayName") or "",
-        "attendees": [
-            attendee.get("email") or attendee.get("displayName") or ""
-            for attendee in event.get("attendees", [])
-        ],
-        "location": clean_location(event.get("location")),
-        "description": clean_description(event.get("description")),
         "calendar_id": candidate.calendar_id,
-        "score": round(candidate.score, 1),
-        "confidence": confidence_label(candidate.score),
+        "calendar_name": candidate.calendar_name,
+        "event": candidate.event,
+        "event_start": candidate.event_start.isoformat(),
+        "event_end": candidate.event_end.isoformat(),
+        "response_status": candidate.response_status,
+        "score": candidate.score,
+        "reasons": candidate.reasons,
     }
+
+
+def deserialize_candidate(payload: dict[str, Any]) -> Candidate:
+    return Candidate(
+        calendar_id=payload.get("calendar_id", ""),
+        calendar_name=payload.get("calendar_name", ""),
+        event=payload.get("event") or {},
+        event_start=datetime.fromisoformat(payload["event_start"]),
+        event_end=datetime.fromisoformat(payload["event_end"]),
+        response_status=payload.get("response_status", "needsAction"),
+        score=float(payload.get("score", 0.0)),
+        reasons=payload.get("reasons") or [],
+    )
+
+
+def serialize_window(window: MatchWindow) -> dict[str, Any]:
+    return {
+        "start": window.start.isoformat(),
+        "end": window.end.isoformat(),
+        "duration_seconds": window.duration.total_seconds(),
+    }
+
+
+def deserialize_window(payload: dict[str, Any]) -> MatchWindow:
+    return MatchWindow(
+        start=datetime.fromisoformat(payload["start"]),
+        end=datetime.fromisoformat(payload["end"]),
+        duration=timedelta(seconds=float(payload.get("duration_seconds", 0.0))),
+    )
+
+
+def metadata_fields(block: str) -> dict[str, str]:
+    """A rendered block as key/value pairs — the shape the matcher prompt wants."""
+    from .pipeline import extract_metadata_block, parse_key_value_block
+
+    return parse_key_value_block(
+        extract_metadata_block(block, METADATA_START, METADATA_END)
+    )
+
+
+def stored_candidates(transcript_path: Path) -> list[Candidate] | None:
+    """The events a person already verified for this session, if any.
+
+    Re-querying Google here could annotate the transcript with a different
+    event than the one confirmed before processing. The window still comes
+    from the transcript, so the block describes the transcript rather than the
+    raw audio it was made from.
+    """
+    from . import context as meeting_context
+
+    ts = extract_timestamp(transcript_path.name)
+    if not ts:
+        return None
+    context = meeting_context.load_context(ts)
+    if context is None or not context.calendar:
+        return None
+    candidates = [
+        deserialize_candidate(item) for item in context.calendar.get("candidates", [])
+    ]
+    return candidates or None
 
 
 def gws_environment() -> dict[str, str]:
@@ -706,6 +759,11 @@ def parse_args() -> argparse.Namespace:
         help="How many hours after the transcript end to search (default: 6)",
     )
     parser.add_argument(
+        "--rematch",
+        action="store_true",
+        help="Ask Google again instead of rendering the event stored in the session context",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the metadata block instead of modifying the transcript",
@@ -719,13 +777,17 @@ def main() -> int:
     try:
         transcript_path = resolve_transcript(args.transcript)
         window = load_transcript(transcript_path)
-        candidates, calendars = match_window(
-            window,
-            calendar=args.calendar,
-            include_shared=args.include_shared_calendars,
-            lookback=timedelta(hours=args.lookback_hours),
-            lookahead=timedelta(hours=args.lookahead_hours),
-        )
+        stored = None if args.rematch else stored_candidates(transcript_path)
+        if stored is not None:
+            candidates, calendars = stored, []
+        else:
+            candidates, calendars = match_window(
+                window,
+                calendar=args.calendar,
+                include_shared=args.include_shared_calendars,
+                lookback=timedelta(hours=args.lookback_hours),
+                lookahead=timedelta(hours=args.lookahead_hours),
+            )
         metadata_block = render_metadata(window, candidates, calendars)
     except GwsError as exc:
         print(str(exc), file=sys.stderr)

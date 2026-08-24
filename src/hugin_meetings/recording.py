@@ -27,6 +27,49 @@ def raw_audio_part_path(audio_dir: Path, prefix: str, session_id: str, part: int
     return audio_dir / year_subdir(session_id) / f"{prefix}-{session_id}-p{part:02d}.opus"
 
 
+def start_context_guess(session_id: str, audio_dir: Path = RAW_AUDIO_DIR):
+    """Guess language, calendar event and customer as soon as a session ends.
+
+    The context stage is what the rest of the pipeline reads, and a person has
+    to verify it before anything expensive runs — so it should be waiting for
+    them, not started by them. Detached and fire-and-forget: a recorder must
+    never block, and a failed guess is a gap to fill in, not a lost recording.
+
+    Set HUGIN_NO_AUTO_CONTEXT to suppress it (tests, headless capture boxes).
+    """
+    import os
+
+    from .cli_utils import resolve_sibling_bin
+
+    if os.environ.get("HUGIN_NO_AUTO_CONTEXT"):
+        return None
+    # An aborted start leaves no parts behind; there is nothing to guess about.
+    if not raw_audio_part_path(audio_dir, "mic", session_id, 1).exists():
+        return None
+
+    log_dir = load_config().state_dir / "logs" / "context"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_dir / f"{session_id}.log", "ab")
+    except OSError:
+        logging.exception("Could not open context log for %s", session_id)
+        return None
+
+    try:
+        return subprocess.Popen(
+            [resolve_sibling_bin("hugin-meet-context"), session_id],
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError:
+        logging.exception("Could not start context guess for %s", session_id)
+        return None
+    finally:
+        log_file.close()
+
+
 def elapsed_label(start_time: float | None, now: float | None = None) -> str:
     if not start_time:
         return "00:00:00"
@@ -210,10 +253,13 @@ class RecordingSession:
             raise
 
     def stop(self) -> None:
+        session_id = self.session_id
         for track in self.tracks:
             track.stop_segment()
             track.recording = False
             track.reset_session()
+        if session_id:
+            start_context_guess(session_id, self.mic.audio_dir)
 
     def rotate(self, mic_source: str | None = None, system_source: str | None = None) -> None:
         """Roll over to the next part, keeping the session id.

@@ -117,15 +117,15 @@ class AudioTui:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
 
-        pending = sum(1 for rec in self.recordings if rec.needs_pipeline)
-        verified = sum(1 for rec in self.recordings if rec.customer_state and rec.customer_state.verified)
+        unverified = sum(1 for rec in self.recordings if rec.needs_verification)
+        ready = sum(1 for rec in self.recordings if rec.ready_for_pipeline)
         header = (
             f"Hugin Audio TUI  |  meetings: {len(self.recordings)}  "
-            f"pending pipeline: {pending}  customer-verified: {verified}"
+            f"needs verification: {unverified}  ready to process: {ready}"
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
-        info = "Enter: open  p: process pending  v: verify customer  l: manage customer  x: remove customer  d: delete entry  r: refresh  q: quit"
+        info = "Enter: open  p: process verified  v: verify  l: verify screen  x: remove customer  d: delete entry  r: refresh  q: quit"
         stdscr.addstr(1, 0, info[: w - 1], curses.A_DIM)
 
         table_top = 3
@@ -168,6 +168,10 @@ class AudioTui:
 
     def pending_commands(self, rec: audio_pipeline.MeetingStatus) -> list[tuple[str, list[str]]]:
         commands: list[tuple[str, list[str]]] = []
+        if not rec.is_verified:
+            raise RuntimeError(
+                f"{rec.timestamp} is not verified — check language and customer first (v)"
+            )
         if not rec.has_transcript:
             if not rec.mic_parts:
                 raise RuntimeError(f"Missing mic audio for {rec.timestamp}")
@@ -195,12 +199,25 @@ class AudioTui:
                     [resolve_sibling_bin("hugin-meet-summarize"), "--model", self.summary_model, transcript_arg],
                 )
             )
+        # Publishing into the customer note is its own stage now that
+        # verification happens before there is anything to publish.
+        commands.append(
+            (
+                f"Linking {rec.timestamp} into its customer note",
+                [resolve_sibling_bin("hugin-meet-link"), rec.timestamp],
+            )
+        )
         return commands
 
     def customer_label(self, rec: audio_pipeline.MeetingStatus) -> str:
-        if rec.customer_state is None:
-            return "-"
-        return rec.customer_state.label
+        """Prefer the context: before verification it is the only place a guess exists."""
+        from . import context as meeting_context
+
+        state = None
+        if rec.context is not None:
+            state = meeting_context.customer_state(rec.context)
+        state = state or rec.customer_state
+        return state.label if state else "-"
 
     def run_command(self, stdscr, title: str, cmd: list[str]) -> None:
         env = os.environ.copy()
@@ -262,9 +279,13 @@ class AudioTui:
         stdscr.refresh()
 
     def process_pending(self, stdscr) -> None:
-        pending = [rec for rec in reversed(self.recordings) if rec.needs_pipeline]
+        pending = [rec for rec in reversed(self.recordings) if rec.ready_for_pipeline]
+        unverified = sum(1 for rec in self.recordings if rec.needs_verification)
         if not pending:
-            self.set_message("No pending recordings.")
+            if unverified:
+                self.set_message(f"{unverified} recording(s) need verification first (v).")
+            else:
+                self.set_message("No pending recordings.")
             return
 
         total = len(pending)
@@ -274,15 +295,6 @@ class AudioTui:
                 for title, cmd in self.pending_commands(rec):
                     self.run_command(stdscr, f"[{idx}/{total}] {title}", cmd)
                 self.refresh()
-                updated = self.find_recording(rec.timestamp)
-                if updated and updated.summary_md and not updated.has_customer_guess:
-                    self.draw_progress(
-                        stdscr,
-                        f"[{idx}/{total}] Guessing customer",
-                        [f"Model: {self.customer_model}"],
-                    )
-                    state = audio_pipeline.guess_customer_state(updated.summary_md, self.customer_model)
-                    self.append_log(f"Customer guess for {rec.timestamp}: {state.label}")
                 self.append_log(f"Finished pipeline for {rec.timestamp}")
             except Exception as exc:
                 self.append_log(f"ERROR: {exc}")
@@ -313,10 +325,6 @@ class AudioTui:
                             self.run_command(stdscr, title, cmd)
                         self.refresh()
                         rec = self.find_recording(rec.timestamp) or rec
-                        if rec.summary_md and not rec.has_customer_guess:
-                            self.draw_progress(stdscr, "Guessing customer...", [f"Model: {self.customer_model}"])
-                            state = audio_pipeline.guess_customer_state(rec.summary_md, self.customer_model)
-                            self.append_log(f"Customer guess for {rec.timestamp}: {state.label}")
                     except Exception as exc:
                         self.set_message(str(exc))
                     finally:
@@ -427,10 +435,12 @@ class AudioTui:
         self.set_message(f"Enrolled {len(assignments)} speaker mapping(s).")
 
     def customer_link_flow(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
-        if not rec.summary_md:
-            self.set_message("No summary yet. Run the pipeline first.")
-            return
+        """Verify a session before it is processed: language, and customer.
 
+        This screen used to run at the end, on a summary. It now runs at the
+        start, on the context — same keys, but the decision is an input to the
+        pipeline instead of a correction after it.
+        """
         while True:
             rec = self.find_recording(rec.timestamp) or rec
             self.draw_customer_screen(stdscr, rec)
@@ -438,14 +448,16 @@ class AudioTui:
             if key in (ord("b"), ord("B"), ord("q"), ord("Q"), 27):
                 return
             if key in (ord("r"), ord("R"), ord("g"), ord("G")):
-                self.draw_progress(stdscr, "Matching customer...", [f"Model: {self.customer_model}"])
                 try:
-                    state = audio_pipeline.guess_customer_state(rec.summary_md, self.customer_model)
-                    self.append_log(f"Customer guess for {rec.timestamp}: {state.label}")
-                    self.set_message("Customer suggestion updated.")
+                    self.run_command(
+                        stdscr,
+                        f"Guessing context for {rec.timestamp}",
+                        [resolve_sibling_bin("hugin-meet-context"), rec.timestamp, "--force"],
+                    )
+                    self.set_message("Context guess updated.")
                     self.refresh()
                 except Exception as exc:
-                    self.set_message(f"Customer matching failed: {exc}")
+                    self.set_message(f"Context guess failed: {exc}")
             elif key in (ord("v"), ord("V"), ord("a"), ord("A")):
                 self.verify_customer(stdscr, rec)
                 self.refresh()
@@ -453,102 +465,190 @@ class AudioTui:
                 chosen = self.pick_customer(stdscr)
                 if chosen is None:
                     continue
-                state = audio_pipeline.manual_customer_state(
-                    customer_name=chosen.name,
-                    customer_path=chosen.path,
+                self.apply_customer(
+                    rec,
+                    audio_pipeline.manual_customer_state(
+                        customer_name=chosen.name,
+                        customer_path=chosen.path,
+                    ),
                 )
-                audio_pipeline.save_customer_state_and_sync_summary(rec.summary_md, state)
-                self.set_message(f"Linked summary to {chosen.name}.")
                 self.refresh()
             elif key in (ord("n"), ord("N")):
                 name = self.prompt_text(stdscr, "New customer/org name: ")
                 if not name:
                     continue
-                state = audio_pipeline.manual_new_customer_state(suggested_name=name)
-                audio_pipeline.save_customer_state_and_sync_summary(rec.summary_md, state)
-                self.set_message(f"Stored new customer suggestion: {name}.")
+                self.apply_customer(
+                    rec, audio_pipeline.manual_new_customer_state(suggested_name=name)
+                )
+                self.refresh()
+            elif key in (ord("l"), ord("L")):
+                self.set_language(stdscr, rec)
                 self.refresh()
             elif key in (ord("c"), ord("C")):
                 self.remove_customer(stdscr, rec)
                 self.refresh()
 
+    def session_context(self, rec: audio_pipeline.MeetingStatus):
+        if rec.context is None:
+            self.set_message("No context yet. Press g to guess.")
+            return None
+        return rec.context
+
+    def apply_customer(self, rec: audio_pipeline.MeetingStatus, state) -> None:
+        """Record a person's customer choice, and publish it if there is a summary.
+
+        Choosing is verifying — this is the point at which a new customer note
+        gets created, as the direct result of the choice.
+        """
+        from . import context as meeting_context
+
+        context = self.session_context(rec)
+        if context is None:
+            return
+        meeting_context.verify(context, customer=state)
+        stored = meeting_context.customer_state(context)
+        self.append_log(f"Verified customer for {rec.timestamp}: {stored.label}")
+        self.set_message(f"Verified customer: {stored.label}")
+        self.publish_if_summarized(rec)
+
+    def publish_if_summarized(self, rec: audio_pipeline.MeetingStatus) -> None:
+        """A customer changed after summarizing still has to reach the note."""
+        if not rec.summary_md or not rec.summary_md.exists():
+            return
+        from . import link
+
+        try:
+            self.append_log(link.link_summary(rec.summary_md))
+        except Exception as exc:
+            self.append_log(f"ERROR linking {rec.timestamp}: {exc}")
+
+    def set_language(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
+        from . import context as meeting_context
+
+        context = self.session_context(rec)
+        if context is None:
+            return
+        language = self.prompt_text(stdscr, "Language: ", context.language_value)
+        if not language:
+            return
+        meeting_context.verify(context, language=language.strip())
+        self.append_log(f"Language for {rec.timestamp}: {language.strip()}")
+        self.set_message(f"Language set to {language.strip()}.")
+        if rec.has_transcript:
+            self.set_message(
+                f"Language set to {language.strip()} — transcript already exists, re-transcribe to apply."
+            )
+
     def draw_customer_screen(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-        stdscr.addstr(0, 0, f"Customer link for {rec.timestamp}", curses.A_BOLD)
+        stdscr.addstr(0, 0, f"Verify {rec.timestamp}", curses.A_BOLD)
         stdscr.addstr(1, 0, f"Meeting: {rec.title}"[: w - 1])
 
+        context = rec.context
         y = 3
-        current = rec.customer_state
-        stdscr.addstr(y, 0, "Cached customer state", curses.color_pair(5) | curses.A_BOLD)
-        y += 1
-        if current:
-            lines = [
-                f"Verified: {'yes' if current.verified else 'no'}",
-                f"Action: {current.action}",
-                f"Customer: {current.customer_name or '-'}",
-                f"Suggested name: {current.suggested_name or '-'}",
-                f"Confidence: {current.confidence}",
-                f"Model/source: {current.model} / {current.source}",
-                f"Basis: {current.rationale or '-'}",
-            ]
-        else:
-            lines = ["No cached customer state yet. Press g to guess."]
-        for line in lines:
-            if y >= h - 8:
-                break
-            for wrapped in textwrap.wrap(line, width=max(20, w - 2)):
-                if y >= h - 8:
-                    break
-                stdscr.addstr(y, 0, wrapped[: w - 1])
-                y += 1
+        if context is None:
+            stdscr.addstr(y, 0, "No context yet. Press g to guess.", curses.color_pair(3))
+            stdscr.addstr(h - 1, 0, "g: guess  b: back"[: w - 1], curses.A_DIM)
+            stdscr.refresh()
+            return
 
-        y += 1
-        stdscr.addstr(y, 0, "Display", curses.color_pair(5) | curses.A_BOLD)
-        y += 1
-        if current is None:
-            suggestion_lines = ["-"]
-        else:
-            suggestion_lines = [
-                f"Front page label: {current.label}",
-                "Verified states are written into the summary. Unverified states only live in ~/.hugin_audio/transcripts.",
-            ]
-        for line in suggestion_lines:
-            if y >= h - 4:
-                break
-            for wrapped in textwrap.wrap(line, width=max(20, w - 2)):
-                if y >= h - 4:
-                    break
-                stdscr.addstr(y, 0, wrapped[: w - 1])
-                y += 1
+        from . import context as meeting_context
 
-        footer = "g/r: guess  v: verify guess  m: pick existing  n: free text  c: remove  b: back"
+        language = context.language or {}
+        votes = language.get("votes") or {}
+        vote_text = ", ".join(f"{lang} x{count}" for lang, count in votes.items()) or "-"
+        state = meeting_context.customer_state(context)
+        event = meeting_context.calendar_fields(context)
+
+        blocks = [
+            (
+                "Verification",
+                [
+                    f"Status: {'VERIFIED' if context.verified else 'NOT VERIFIED'}"
+                    + (f" ({context.verified_at})" if context.verified_at else ""),
+                    f"Applied so far: {context.applied or '-'}",
+                ],
+            ),
+            (
+                "Language",
+                [
+                    f"Language: {context.language_value}",
+                    f"Source: {language.get('source', '-')}  confidence: {language.get('confidence', '-')}",
+                    f"Windows: {vote_text}",
+                    f"Note: {language.get('note') or '-'}",
+                ],
+            ),
+            (
+                "Calendar",
+                [
+                    f"Event: {event.get('Event', '-')}",
+                    f"Time: {event.get('Event time', '-')}",
+                    f"Attendees: {event.get('Attendees', '-')}",
+                    f"Match: {event.get('Match status', context.note or '-')}",
+                ],
+            ),
+            (
+                "Customer",
+                [
+                    f"Customer: {state.label if state else '(none)'}",
+                    f"Action: {state.action if state else '-'}  confidence: {state.confidence if state else '-'}",
+                    f"Model/source: {state.model if state else '-'} / {state.source if state else '-'}",
+                    f"Basis: {(state.rationale if state else '') or '-'}",
+                ],
+            ),
+        ]
+
+        for title, body in blocks:
+            if y >= h - 3:
+                break
+            stdscr.addstr(y, 0, title, curses.color_pair(5) | curses.A_BOLD)
+            y += 1
+            for line in body:
+                for wrapped in textwrap.wrap(line, width=max(20, w - 2)) or [""]:
+                    if y >= h - 3:
+                        break
+                    stdscr.addstr(y, 0, wrapped[: w - 1])
+                    y += 1
+            y += 1
+
+        footer = "v: accept guess  m: pick existing  n: free text  l: language  g: re-guess  c: remove  b: back"
         stdscr.addstr(h - 1, 0, footer[: w - 1], curses.A_DIM)
         stdscr.refresh()
 
     def verify_customer(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
-        if not rec.summary_md:
-            self.set_message("No summary yet.")
-            return
-        if not rec.customer_state:
-            self.set_message("No cached customer guess to verify.")
-            return
-        if rec.customer_state.verified:
-            self.set_message("Customer state is already verified.")
-            return
+        """Accept the guess as it stands."""
+        from . import context as meeting_context
 
-        self.draw_progress(stdscr, "Verifying customer...", [self.customer_label(rec)])
-        state = audio_pipeline.verify_customer_state(rec.summary_md)
-        self.append_log(f"Verified customer for {rec.timestamp}: {state.label}")
-        self.set_message(f"Verified customer: {state.label}")
+        context = self.session_context(rec)
+        if context is None:
+            return
+        state = meeting_context.customer_state(context)
+        if state is None:
+            self.set_message("No customer guessed. Pick one (m) or type a name (n).")
+            return
+        self.draw_progress(stdscr, "Verifying...", [state.label])
+        self.apply_customer(rec, state)
 
     def remove_customer(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
-        if not rec.summary_md:
-            self.set_message("No summary yet.")
-            return
-        audio_pipeline.remove_customer_link(rec.summary_md)
-        self.append_log(f"Removed customer state for {rec.timestamp}")
-        self.set_message("Removed cached/verified customer link.")
+        """Drop the customer entirely — a verified session with nowhere to publish.
+
+        This is the third outcome of verification: the meeting is confirmed and
+        may be processed, but it does not belong in any customer note.
+        """
+        from . import context as meeting_context
+
+        if rec.summary_md and rec.summary_md.exists():
+            audio_pipeline.remove_customer_link(rec.summary_md)
+        else:
+            audio_pipeline.clear_customer_state(rec.timestamp)
+        context = rec.context
+        if context is not None:
+            context.customer = None
+            meeting_context.mark_verified(context)
+            meeting_context.save_context(context)
+        self.append_log(f"Removed customer for {rec.timestamp}")
+        self.set_message("Removed customer link; session stays verified.")
 
     def slack_post_flow(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
         if not rec.summary_md or not rec.summary_md.exists():

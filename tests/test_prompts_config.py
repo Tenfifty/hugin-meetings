@@ -97,8 +97,6 @@ class ProjectMatcherPromptTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
 
     def test_project_matcher_prompt_template_is_customizable(self) -> None:
-        summary_path = self.base / "summary-20260424-101112.md"
-        summary_path.write_text("## Meeting Summary\n\nDiscussed Project Apollo.\n")
         (self.customers_dir / "Project Apollo.md").write_text("# Project Apollo\nImportant work.\n")
 
         template_path = self.base / "matcher.md"
@@ -110,7 +108,7 @@ class ProjectMatcherPromptTests(unittest.TestCase):
         )
 
         # load_config() returns the lru-cached MeetingsConfig; patching
-        # its attribute is observable to pipeline.build_customer_prompt.
+        # its attribute is observable to pipeline.build_customer_prompt_from.
         from hugin_meetings.config import load_config
 
         with patch.object(
@@ -121,13 +119,23 @@ class ProjectMatcherPromptTests(unittest.TestCase):
                 prompt_path=template_path,
             ),
         ):
-            prompt, candidates = pipeline.build_customer_prompt(summary_path, "gpt-5.6-luna")
+            prompt, candidates = pipeline.build_customer_prompt_from(
+                {}, "Discussed Project Apollo."
+            )
+            calendar_prompt, _ = pipeline.build_customer_prompt_from(
+                {"Event": "Apollo kickoff", "Attendees": "a@apollo.example"}, ""
+            )
 
         self.assertIn("CUSTOM TEMPLATE", prompt)
         self.assertIn("Customer: Project Apollo", prompt)
         self.assertIn("Discussed Project Apollo.", prompt)
         self.assertIn("- (no calendar metadata)", prompt)
         self.assertEqual([candidate.name for candidate in candidates], ["Project Apollo"])
+
+        # Before transcription the same template runs in calendar mode: the
+        # event is the whole evidence base, and the model is told so.
+        self.assertIn("- Event: Apollo kickoff", calendar_prompt)
+        self.assertIn("(not transcribed yet", calendar_prompt)
 
     def test_inactive_project_directory_names_are_configurable(self) -> None:
         active = self.customers_dir / "Active.md"
