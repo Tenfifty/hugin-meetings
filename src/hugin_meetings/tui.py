@@ -92,20 +92,10 @@ class AudioTui:
                 if rec:
                     self.customer_link_flow(stdscr, rec)
                     self.refresh()
-            elif key in (ord("v"), ord("V")):
-                rec = self.selected_recording()
-                if rec:
-                    self.verify_customer(stdscr, rec)
-                    self.refresh()
             elif key in (ord("a"), ord("A")):
                 rec = self.selected_recording()
                 if rec:
                     self.accept_and_process(stdscr, rec)
-            elif key in (ord("x"), ord("X")):
-                rec = self.selected_recording()
-                if rec:
-                    self.remove_customer(stdscr, rec)
-                    self.refresh()
             elif key in (ord("d"), ord("D")):
                 rec = self.selected_recording()
                 if rec:
@@ -132,7 +122,7 @@ class AudioTui:
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
-        info = "Enter: open/verify  a: accept + process  v: accept only  x: no customer  d: delete entry  r: refresh  q: quit"
+        info = "Enter: open/verify  a: accept + process  d: delete entry  r: refresh  q: quit"
         stdscr.addstr(1, 0, info[: w - 1], curses.A_DIM)
 
         table_top = 3
@@ -386,12 +376,6 @@ class AudioTui:
             elif key in (ord("l"), ord("L")):
                 self.customer_link_flow(stdscr, rec)
                 self.refresh()
-            elif key in (ord("v"), ord("V")):
-                self.verify_customer(stdscr, rec)
-                self.refresh()
-            elif key in (ord("x"), ord("X")):
-                self.remove_customer(stdscr, rec)
-                self.refresh()
             elif key in (ord("s"), ord("S")):
                 self.slack_post_flow(stdscr, rec)
                 self.refresh()
@@ -459,7 +443,7 @@ class AudioTui:
         elif rec.transcript_md and rec.transcript_md.exists():
             excerpt = rec.title
 
-        stdscr.addstr(8, 0, "e: enroll  l: verify screen  v: verify  x: remove customer  d: delete entry  g: run pipeline  s: post to Slack  b: back", curses.A_DIM)
+        stdscr.addstr(8, 0, "e: enroll  l: verify screen  d: delete entry  g: run pipeline  s: post to Slack  b: back", curses.A_DIM)
         stdscr.addstr(10, 0, "Summary excerpt", curses.color_pair(5) | curses.A_BOLD)
         for idx, line in enumerate(textwrap.wrap(excerpt, width=max(20, w - 2))[: max(1, h - 13)], start=11):
             if idx >= h - 1:
