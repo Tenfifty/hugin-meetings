@@ -90,6 +90,26 @@ class ContextRoundTripTests(unittest.TestCase):
         meeting_context.save_context(verified)
         self.assertTrue(meeting_context.load_context("20260824-140104").verified)
 
+    def test_an_unprocessed_meeting_is_titled_by_its_event(self) -> None:
+        """The list should name the meeting before there is a transcript to name it."""
+        from hugin_meetings import pipeline
+
+        rec = pipeline.MeetingStatus(
+            timestamp="20260824-140104",
+            mic_path=None,
+            sys_path=None,
+            mic_parts=(),
+            sys_parts=(),
+            transcript_json=None,
+            transcript_md=None,
+            summary_md=None,
+            calendar_fields={},
+            customer_state=None,
+            anonymous_speakers=[],
+            context=self.make(),
+        )
+        self.assertEqual(rec.title, "Notana och AI")
+
     def test_missing_context_is_none(self) -> None:
         self.assertIsNone(meeting_context.load_context("20260101-000000"))
 

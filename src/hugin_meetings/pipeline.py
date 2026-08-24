@@ -208,8 +208,15 @@ class MeetingStatus:
 
     @property
     def is_verified(self) -> bool:
-        """A person has confirmed language and customer for this session."""
-        return bool(self.context and self.context.verified)
+        """A person has confirmed what this meeting is.
+
+        Meetings processed before the context stage existed were verified in
+        the old place — the customer state written when a person confirmed the
+        match — and must not be dragged back through verification now.
+        """
+        if self.context is not None and self.context.verified:
+            return True
+        return bool(self.customer_state and self.customer_state.verified)
 
     @property
     def needs_verification(self) -> bool:
@@ -278,6 +285,10 @@ class MeetingStatus:
         event = self.calendar_fields.get("Event")
         if event and event != "-":
             return event
+        # Before transcription there is no metadata block yet, but the context
+        # already knows which meeting this was — same source, earlier.
+        if self.context is not None and self.context.event_title:
+            return self.context.event_title
         if self.summary_md and self.summary_md.exists():
             excerpt = summary_excerpt(self.summary_md)
             if excerpt:

@@ -54,6 +54,40 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(rec.pipeline_total_steps, 5)
 
 
+class LegacyVerificationTests(unittest.TestCase):
+    """Meetings from before the context stage were verified in the old place."""
+
+    def verified_state(self) -> pipeline.CustomerState:
+        return pipeline.CustomerState(
+            action="link_existing",
+            confidence="high",
+            rationale="Confirmed in the old flow.",
+            model="gpt-5.6-luna",
+            verified=True,
+            customer_name="Helos",
+            customer_path=Path("/vault/kunder/Helos.md"),
+            source="auto",
+        )
+
+    def test_a_confirmed_customer_counts_as_verified(self) -> None:
+        rec = status(customer_state=self.verified_state())
+        self.assertTrue(rec.is_verified)
+        self.assertFalse(rec.needs_verification)
+
+    def test_re_guessing_an_old_meeting_does_not_unsettle_it(self) -> None:
+        """Building a context for an already-processed meeting is not a demotion."""
+        rec = status(
+            customer_state=self.verified_state(),
+            context=MeetingContext(session_id="20260824-130649", verified=False),
+        )
+        self.assertTrue(rec.is_verified)
+
+    def test_an_unverified_customer_state_does_not_count(self) -> None:
+        state = self.verified_state()
+        state.verified = False
+        self.assertFalse(status(customer_state=state).is_verified)
+
+
 class LinkStageTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

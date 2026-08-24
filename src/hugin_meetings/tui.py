@@ -210,14 +210,27 @@ class AudioTui:
         return commands
 
     def customer_label(self, rec: audio_pipeline.MeetingStatus) -> str:
-        """Prefer the context: before verification it is the only place a guess exists."""
+        """A confirmed customer wins over a guess, wherever each of them lives.
+
+        The context is where a guess exists before verification; the customer
+        state is where a decision lands. Re-guessing an old meeting must not
+        make its settled customer look unsettled.
+        """
         from . import context as meeting_context
 
-        state = None
-        if rec.context is not None:
-            state = meeting_context.customer_state(rec.context)
-        state = state or rec.customer_state
-        return state.label if state else "-"
+        guess = (
+            meeting_context.customer_state(rec.context)
+            if rec.context is not None
+            else None
+        )
+        candidates = [rec.customer_state, guess]
+        for state in candidates:
+            if state is not None and state.verified:
+                return state.label
+        for state in candidates:
+            if state is not None:
+                return state.label
+        return "-"
 
     def run_command(self, stdscr, title: str, cmd: list[str]) -> None:
         env = os.environ.copy()
