@@ -113,3 +113,28 @@ def test_enter_opens_the_meeting_once_it_is_settled() -> None:
     )
 
     assert AudioTui.enter_opens_verification(settled) is False
+
+
+def test_reguessing_is_refused_once_a_decision_exists() -> None:
+    """--force rebuilds from scratch, which would drop the operator's choice."""
+    from hugin_meetings.context import MeetingContext
+
+    settled = make_status(
+        context=MeetingContext(session_id="20260824-140104", verified=True)
+    )
+
+    assert AudioTui.reguess_would_discard_decision(settled) is True
+
+
+def test_reguessing_is_allowed_while_it_is_still_only_a_guess() -> None:
+    from hugin_meetings.context import MeetingContext
+
+    pending = make_status(
+        context=MeetingContext(session_id="20260824-140104", note="gws not found on PATH")
+    )
+
+    assert AudioTui.reguess_would_discard_decision(pending) is False
+
+
+def test_reguessing_is_allowed_when_there_is_no_context_at_all() -> None:
+    assert AudioTui.reguess_would_discard_decision(make_status()) is False

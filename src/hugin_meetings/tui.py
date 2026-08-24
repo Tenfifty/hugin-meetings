@@ -208,6 +208,18 @@ class AudioTui:
         return commands
 
     @staticmethod
+    def reguess_would_discard_decision(rec: audio_pipeline.MeetingStatus) -> bool:
+        """Re-guessing replaces a guess; it must not replace a decision.
+
+        Rebuilding a context starts from scratch, so on a verified session it
+        would drop the customer the operator chose and the verification stamp,
+        while the materialized customer state kept saying verified. Guessing is
+        for sessions that have no usable guess — a wrong one is corrected with
+        m, n or l, which is both instant and deterministic.
+        """
+        return rec.is_verified
+
+    @staticmethod
     def enter_opens_verification(rec: audio_pipeline.MeetingStatus) -> bool:
         """Enter means "let me look at this" — at what depends on the meeting.
 
@@ -495,6 +507,11 @@ class AudioTui:
             if key in (ord("b"), ord("B"), ord("q"), ord("Q"), 27):
                 return
             if key in (ord("r"), ord("R"), ord("g"), ord("G")):
+                if self.reguess_would_discard_decision(rec):
+                    self.set_message(
+                        "Already verified — change it directly with m, n or l instead."
+                    )
+                    continue
                 try:
                     self.run_command(
                         stdscr,
@@ -662,7 +679,7 @@ class AudioTui:
                     y += 1
             y += 1
 
-        footer = "v: accept  a: accept + process  m: pick existing  n: free text  l: language  g: re-guess  c: remove  b: back"
+        footer = "v: accept  a: accept + process  m: pick existing  n: free text  l: language  g: guess/retry  c: remove  b: back"
         stdscr.addstr(h - 1, 0, footer[: w - 1], curses.A_DIM)
         stdscr.refresh()
 
