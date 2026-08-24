@@ -99,6 +99,10 @@ class AudioTui:
                 if rec:
                     self.verify_customer(stdscr, rec)
                     self.refresh()
+            elif key in (ord("a"), ord("A")):
+                rec = self.selected_recording()
+                if rec:
+                    self.accept_and_process(stdscr, rec)
             elif key in (ord("x"), ord("X")):
                 rec = self.selected_recording()
                 if rec:
@@ -110,8 +114,13 @@ class AudioTui:
                     self.delete_entry_flow(stdscr, rec)
                     self.refresh()
             elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
-                if self.recordings:
-                    self.open_recording(stdscr, self.recordings[self.selected])
+                rec = self.selected_recording()
+                if rec:
+                    if self.enter_opens_verification(rec):
+                        self.customer_link_flow(stdscr, rec)
+                    else:
+                        self.open_recording(stdscr, rec)
+                    self.refresh()
 
     def draw_main(self, stdscr) -> None:
         stdscr.erase()
@@ -125,7 +134,7 @@ class AudioTui:
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
-        info = "Enter: open  p: process verified  v: verify  l: verify screen  x: remove customer  d: delete entry  r: refresh  q: quit"
+        info = "Enter: open/verify  a: accept + process  p: process all verified  v: accept  x: remove customer  d: delete entry  r: refresh  q: quit"
         stdscr.addstr(1, 0, info[: w - 1], curses.A_DIM)
 
         table_top = 3
@@ -209,6 +218,44 @@ class AudioTui:
             )
         )
         return commands
+
+    @staticmethod
+    def enter_opens_verification(rec: audio_pipeline.MeetingStatus) -> bool:
+        """Enter means "let me look at this" — at what depends on the meeting.
+
+        A session still waiting for a decision opens the verification screen,
+        because that is the only thing there is to do with it. A settled one
+        opens the meeting itself, where enrollment and Slack live.
+        """
+        return rec.needs_verification
+
+    def accept_and_process(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
+        """Say yes to the guess and run the pipeline, in one keystroke.
+
+        The common case is that the guess is right, and making that cost two
+        screens would defeat the point of guessing up front.
+        """
+        if rec.needs_verification:
+            self.verify_customer(stdscr, rec)
+            self.refresh()
+            rec = self.find_recording(rec.timestamp) or rec
+            if rec.needs_verification:
+                # verify_customer has already said why it could not.
+                return
+
+        if not rec.needs_pipeline:
+            self.set_message("Pipeline already complete for this meeting.")
+            return
+
+        try:
+            for title, cmd in self.pending_commands(rec):
+                self.run_command(stdscr, title, cmd)
+            self.append_log(f"Finished pipeline for {rec.timestamp}")
+        except Exception as exc:
+            self.append_log(f"ERROR: {exc}")
+            self.set_message(str(exc))
+        finally:
+            self.refresh()
 
     def language_label(self, rec: audio_pipeline.MeetingStatus) -> str:
         """The language a session will be transcribed in.
@@ -503,9 +550,12 @@ class AudioTui:
                     self.refresh()
                 except Exception as exc:
                     self.set_message(f"Context guess failed: {exc}")
-            elif key in (ord("v"), ord("V"), ord("a"), ord("A")):
+            elif key in (ord("v"), ord("V")):
                 self.verify_customer(stdscr, rec)
                 self.refresh()
+            elif key in (ord("a"), ord("A")):
+                self.accept_and_process(stdscr, rec)
+                return
             elif key in (ord("m"), ord("M")):
                 chosen = self.pick_customer(stdscr)
                 if chosen is None:
@@ -657,7 +707,7 @@ class AudioTui:
                     y += 1
             y += 1
 
-        footer = "v: accept guess  m: pick existing  n: free text  l: language  g: re-guess  c: remove  b: back"
+        footer = "v: accept  a: accept + process  m: pick existing  n: free text  l: language  g: re-guess  c: remove  b: back"
         stdscr.addstr(h - 1, 0, footer[: w - 1], curses.A_DIM)
         stdscr.refresh()
 

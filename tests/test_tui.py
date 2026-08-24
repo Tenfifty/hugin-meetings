@@ -95,3 +95,21 @@ def test_a_legacy_meeting_verified_by_its_customer_shows_a_plain_language() -> N
 
 def test_no_context_means_no_language_to_show() -> None:
     assert make_tui().language_label(make_status()) == "-"
+
+
+def test_enter_opens_verification_while_a_decision_is_pending() -> None:
+    from hugin_meetings.context import MeetingContext
+
+    pending = make_status(context=MeetingContext(session_id="20260824-140104"))
+
+    assert AudioTui.enter_opens_verification(pending) is True
+
+
+def test_enter_opens_the_meeting_once_it_is_settled() -> None:
+    from hugin_meetings.context import MeetingContext
+
+    settled = make_status(
+        context=MeetingContext(session_id="20260824-140104", verified=True)
+    )
+
+    assert AudioTui.enter_opens_verification(settled) is False
