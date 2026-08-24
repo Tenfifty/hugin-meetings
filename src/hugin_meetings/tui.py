@@ -147,7 +147,7 @@ class AudioTui:
             line = (
                 f"{selector} {rec.timestamp}  {part_label:>3}  {rec.short_status}  "
                 f"{rec.pipeline_steps_complete}/{rec.pipeline_total_steps}  "
-                f"{self.language_label(rec):<7} "
+                f"{self.language_label(rec):<4}"
                 f"{customer_label[:22].ljust(22)}  {rec.title}{enroll}"
             )
             attr = curses.color_pair(1) | curses.A_BOLD if actual_index == self.selected else curses.A_NORMAL
@@ -214,9 +214,9 @@ class AudioTui:
         """The language a session will be transcribed in.
 
         Verification covers language as well as customer, so it has to be
-        visible where verification happens. Marked the same way as the customer
-        — ``??sv??`` until a person has confirmed it — because the question
-        mark means one thing in this list: you have not looked at it yet.
+        visible where verification happens. A trailing ``?`` means the same
+        thing the ``??`` around a customer means — nobody has confirmed it yet
+        — but a two-letter code does not need the column width to say so.
 
         Why the probe landed where it did (and whether it abstained at all) is
         on the verification screen, which is where you decide.
@@ -225,7 +225,7 @@ class AudioTui:
         if context is None:
             return "-"
         value = context.language_value
-        return value if rec.is_verified else f"??{value}??"
+        return value if rec.is_verified else f"{value}?"
 
     def customer_label(self, rec: audio_pipeline.MeetingStatus) -> str:
         """A confirmed customer wins over a guess, wherever each of them lives.

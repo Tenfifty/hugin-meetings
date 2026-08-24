@@ -57,8 +57,8 @@ def test_language_column_shows_what_will_be_transcribed() -> None:
     assert make_tui().language_label(make_status(context=context)) == "sv"
 
 
-def test_an_unverified_language_is_marked_like_an_unverified_customer() -> None:
-    """One meaning per marker: ?? is "you have not looked at this yet"."""
+def test_an_unverified_language_is_marked_unverified() -> None:
+    """Same meaning as ?? on a customer, compact enough for a two-letter code."""
     from hugin_meetings.context import MeetingContext
 
     context = MeetingContext(
@@ -66,7 +66,7 @@ def test_an_unverified_language_is_marked_like_an_unverified_customer() -> None:
         language={"value": "sv", "source": "langid", "confidence": 0.98},
     )
 
-    assert make_tui().language_label(make_status(context=context)) == "??sv??"
+    assert make_tui().language_label(make_status(context=context)) == "sv?"
 
 
 def test_a_legacy_meeting_verified_by_its_customer_shows_a_plain_language() -> None:
