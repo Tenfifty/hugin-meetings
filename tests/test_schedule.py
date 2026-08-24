@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
@@ -67,14 +67,199 @@ class ReminderTests(unittest.TestCase):
         )
 
         state = schedule.set_recording_meeting(state, meeting.key)
-        self.assertEqual(
+        prompt = schedule.stop_reminder_candidate(
+            {meeting.key: meeting},
+            state,
+            datetime(2026, 4, 24, 10, 31),
+            is_recording=True,
+        )
+        self.assertEqual(prompt.meeting, meeting)
+        self.assertEqual(prompt.index, 0)
+        self.assertEqual(prompt.detail, "Scheduled end: 10:30")
+
+        state, changed = schedule.mark_prompted(state, "stop", prompt.state_key)
+        self.assertTrue(changed)
+        self.assertIsNone(
             schedule.stop_reminder_candidate(
                 {meeting.key: meeting},
                 state,
-                datetime(2026, 4, 24, 10, 31),
+                datetime(2026, 4, 24, 10, 45),
                 is_recording=True,
-            ),
-            meeting,
+            )
+        )
+
+    def test_stop_reminder_repeats_every_half_hour_after_the_first(self) -> None:
+        meeting = schedule.ScheduledMeeting(
+            key="m1",
+            title="Planning",
+            start_at=datetime(2026, 4, 24, 10, 0),
+            end_at=datetime(2026, 4, 24, 10, 30),
+            source_line="",
+        )
+        index = {meeting.key: meeting}
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
+        )
+
+        # Answering "no" to the first prompt is not the end of it.
+        first = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 10, 30), is_recording=True
+        )
+        state, _ = schedule.mark_prompted(state, "stop", first.state_key)
+
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                index, state, datetime(2026, 4, 24, 10, 59), is_recording=True
+            )
+        )
+        second = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 11, 0), is_recording=True
+        )
+        self.assertEqual(second.index, 1)
+        self.assertEqual(second.due_at, datetime(2026, 4, 24, 11, 0))
+        self.assertEqual(
+            second.detail, "Scheduled end: 10:30 - still recording, 30 min past due"
+        )
+
+    def test_stop_reminder_asks_once_for_a_long_forgotten_recording(self) -> None:
+        meeting = schedule.ScheduledMeeting(
+            key="m1",
+            title="Planning",
+            start_at=datetime(2026, 4, 24, 10, 0),
+            end_at=datetime(2026, 4, 24, 10, 30),
+            source_line="",
+        )
+        index = {meeting.key: meeting}
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
+        )
+
+        prompt = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 12, 40), is_recording=True
+        )
+        self.assertEqual(prompt.index, 4)
+        self.assertEqual(prompt.overdue, timedelta(hours=2))
+
+        # The four missed deadlines do not queue up behind it.
+        state, _ = schedule.mark_prompted(state, "stop", prompt.state_key)
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                index, state, datetime(2026, 4, 24, 12, 41), is_recording=True
+            )
+        )
+
+    def test_stop_reminder_for_a_meeting_without_an_end_time(self) -> None:
+        meeting = schedule.ScheduledMeeting(
+            key="m1",
+            title="Open ended",
+            start_at=datetime(2026, 4, 24, 10, 0),
+            end_at=None,
+            source_line="",
+        )
+        index = {meeting.key: meeting}
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
+        )
+
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                index, state, datetime(2026, 4, 24, 10, 29), is_recording=True
+            )
+        )
+        prompt = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 10, 30), is_recording=True
+        )
+        self.assertEqual(prompt.index, 0)
+        self.assertEqual(
+            prompt.detail, "No end time in the journal; started 10:00"
+        )
+
+        state, _ = schedule.mark_prompted(state, "stop", prompt.state_key)
+        again = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 11, 0), is_recording=True
+        )
+        self.assertEqual(again.index, 1)
+
+    def test_stop_reminder_for_a_recording_with_no_journal_meeting(self) -> None:
+        state = schedule.default_reminder_state(date(2026, 4, 24))
+        started = datetime(2026, 4, 24, 10, 0)
+
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                {},
+                state,
+                datetime(2026, 4, 24, 10, 29),
+                is_recording=True,
+                recording_started_at=started,
+            )
+        )
+        prompt = schedule.stop_reminder_candidate(
+            {}, state, datetime(2026, 4, 24, 10, 30), is_recording=True,
+            recording_started_at=started,
+        )
+        self.assertIsNone(prompt.meeting)
+        self.assertEqual(prompt.index, 0)
+        self.assertEqual(prompt.title, "Unscheduled recording")
+        self.assertEqual(prompt.detail, "No journal meeting for it; started 10:00")
+
+        state, _ = schedule.mark_prompted(state, "stop", prompt.state_key)
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                {}, state, datetime(2026, 4, 24, 10, 45), is_recording=True,
+                recording_started_at=started,
+            )
+        )
+        again = schedule.stop_reminder_candidate(
+            {}, state, datetime(2026, 4, 24, 11, 0), is_recording=True,
+            recording_started_at=started,
+        )
+        self.assertEqual(again.index, 1)
+        self.assertEqual(
+            again.detail,
+            "No journal meeting for it; started 10:00 - still recording, 30 min past due",
+        )
+
+    def test_stop_reminder_needs_an_anchor(self) -> None:
+        state = schedule.default_reminder_state(date(2026, 4, 24))
+
+        # No meeting and no known recording start: nothing to count from.
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                {}, state, datetime(2026, 4, 24, 12, 0), is_recording=True
+            )
+        )
+        # Not recording at all.
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                {},
+                state,
+                datetime(2026, 4, 24, 12, 0),
+                is_recording=False,
+                recording_started_at=datetime(2026, 4, 24, 10, 0),
+            )
+        )
+
+    def test_a_meeting_beats_the_recording_start_as_the_anchor(self) -> None:
+        meeting = schedule.ScheduledMeeting(
+            key="m1",
+            title="Planning",
+            start_at=datetime(2026, 4, 24, 10, 0),
+            end_at=datetime(2026, 4, 24, 11, 0),
+            source_line="",
+        )
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
+        )
+
+        # 45 minutes into a recording, but the meeting runs until 11:00.
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                {meeting.key: meeting},
+                state,
+                datetime(2026, 4, 24, 10, 45),
+                is_recording=True,
+                recording_started_at=datetime(2026, 4, 24, 10, 0),
+            )
         )
 
     def test_associate_current_recording_requires_one_candidate(self) -> None:

@@ -142,7 +142,16 @@ pipeline — it hands off to the TUI, which drives transcription/summarization.
    call `hugin-meet-transcribe` / `-summarize` / `-match-calendar` directly;
    those stages have ordering requirements the TUI owns.
 5. Optionally surface upcoming meetings via `hugin_meetings.schedule`
-   (journal-derived, plus the recorder reminder state).
+   (journal-derived, plus the recorder reminder state). Stop reminders are
+   repeating: `stop_reminder_candidate()` returns a `StopPrompt` (not a
+   meeting) for the *latest* deadline that has passed, starting at the
+   scheduled end — or `OPEN_ENDED_STOP_DELAY` after the start for a journal
+   entry with no end time — and again every `STOP_PROMPT_INTERVAL` until the
+   recording stops. Pass `recording_started_at` (see
+   `RecordingSession.started_at`) so a recording that never matched a journal
+   meeting is asked about too; without it those get no stop prompt at all.
+   Mark a prompt with `prompt.state_key`, not `meeting.key`, or every repeat
+   is suppressed.
 
 Don't expand this surface casually — frontends live in other repos and would break.
 

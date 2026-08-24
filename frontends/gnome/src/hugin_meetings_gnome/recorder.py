@@ -297,22 +297,25 @@ class AudioRecorder:
 
     def _check_stop_reminders(self, now):
         self._maybe_associate_current_recording(now)
-        meeting = meeting_schedule.stop_reminder_candidate(
+        prompt = meeting_schedule.stop_reminder_candidate(
             self.meeting_index,
             self.reminder_state,
             now,
             is_recording=self.is_recording,
+            recording_started_at=self.session.started_at,
         )
-        if not meeting:
+        if not prompt:
             return
 
-        logging.info("Prompting to stop recording for %s", meeting.title)
-        should_stop = self._prompt_yes_no(
-            "Stop recording?",
-            f'Stop recording for "{meeting.title}"?',
-            f"Scheduled end: {meeting.end_at.strftime('%H:%M')}",
+        logging.info(
+            "Prompting to stop recording for %s (reminder %d)", prompt.title, prompt.index + 1
         )
-        self._mark_prompted("stop", meeting.key)
+        if prompt.meeting is not None:
+            question = f'Stop recording for "{prompt.meeting.title}"?'
+        else:
+            question = "Still recording. Stop?"
+        should_stop = self._prompt_yes_no("Stop recording?", question, prompt.detail)
+        self._mark_prompted("stop", prompt.state_key)
         if should_stop and self.is_recording:
             self._stop_recording()
 

@@ -237,6 +237,17 @@ class RecordingSession:
     def session_id(self) -> str | None:
         return self.mic.session_id
 
+    @property
+    def started_at(self) -> datetime | None:
+        """When this session started, or None if it is not recording.
+
+        Survives segment rotation - the tracks keep the session's start time,
+        not the current part's.
+        """
+        if not self.mic.start_time:
+            return None
+        return datetime.fromtimestamp(self.mic.start_time)
+
     def start(self, mic_source: str, system_source: str) -> None:
         session_id = new_session_id()
         start_time = time.time()
