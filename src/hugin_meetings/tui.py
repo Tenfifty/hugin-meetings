@@ -147,6 +147,7 @@ class AudioTui:
             line = (
                 f"{selector} {rec.timestamp}  {part_label:>3}  {rec.short_status}  "
                 f"{rec.pipeline_steps_complete}/{rec.pipeline_total_steps}  "
+                f"{self.language_label(rec):<3} "
                 f"{customer_label[:22].ljust(22)}  {rec.title}{enroll}"
             )
             attr = curses.color_pair(1) | curses.A_BOLD if actual_index == self.selected else curses.A_NORMAL
@@ -208,6 +209,21 @@ class AudioTui:
             )
         )
         return commands
+
+    def language_label(self, rec: audio_pipeline.MeetingStatus) -> str:
+        """The language a session will be transcribed in.
+
+        Verification covers language as well as customer, so it has to be
+        visible where verification happens. A trailing ``?`` means the probe
+        did not decide and the configured default is standing in — the one
+        case worth a second look before pressing v.
+        """
+        context = rec.context
+        if context is None:
+            return "-"
+        language = context.language or {}
+        mark = "?" if language.get("source") not in {"langid", "manual"} else ""
+        return f"{context.language_value}{mark}"
 
     def customer_label(self, rec: audio_pipeline.MeetingStatus) -> str:
         """A confirmed customer wins over a guess, wherever each of them lives.
@@ -394,14 +410,28 @@ class AudioTui:
         else:
             customer_line = "Customer: none"
             customer_attr = curses.color_pair(3)
-        stdscr.addstr(4, 0, customer_line[: w - 1], customer_attr)
+        language_note = ""
+        if rec.context is not None:
+            language = rec.context.language or {}
+            votes = language.get("votes") or {}
+            if votes:
+                language_note = "  [" + ", ".join(f"{k} x{v}" for k, v in votes.items()) + "]"
+            elif language.get("note"):
+                language_note = f"  [{language['note']}]"
+        stdscr.addstr(
+            4,
+            0,
+            (f"Language: {self.language_label(rec)}{language_note}")[: w - 1],
+            curses.color_pair(2) if rec.is_verified else curses.color_pair(3),
+        )
+        stdscr.addstr(5, 0, customer_line[: w - 1], customer_attr)
 
         enroll_line = (
             "Anonymous speakers: " + ", ".join(rec.anonymous_speakers)
             if rec.anonymous_speakers
             else "Anonymous speakers: none"
         )
-        stdscr.addstr(5, 0, enroll_line[: w - 1])
+        stdscr.addstr(6, 0, enroll_line[: w - 1])
 
         excerpt = ""
         if rec.summary_md and rec.summary_md.exists():
@@ -409,9 +439,9 @@ class AudioTui:
         elif rec.transcript_md and rec.transcript_md.exists():
             excerpt = rec.title
 
-        stdscr.addstr(7, 0, "e: enroll  l: manage customer  v: verify customer  x: remove customer  d: delete entry  g: run pipeline  s: post to Slack  b: back", curses.A_DIM)
-        stdscr.addstr(9, 0, "Summary excerpt", curses.color_pair(5) | curses.A_BOLD)
-        for idx, line in enumerate(textwrap.wrap(excerpt, width=max(20, w - 2))[: max(1, h - 12)], start=10):
+        stdscr.addstr(8, 0, "e: enroll  l: verify screen  v: verify  x: remove customer  d: delete entry  g: run pipeline  s: post to Slack  b: back", curses.A_DIM)
+        stdscr.addstr(10, 0, "Summary excerpt", curses.color_pair(5) | curses.A_BOLD)
+        for idx, line in enumerate(textwrap.wrap(excerpt, width=max(20, w - 2))[: max(1, h - 13)], start=11):
             if idx >= h - 1:
                 break
             stdscr.addstr(idx, 0, line[: w - 1])
