@@ -522,9 +522,6 @@ class AudioTui:
                     self.refresh()
                 except Exception as exc:
                     self.set_message(f"Context guess failed: {exc}")
-            elif key in (ord("v"), ord("V")):
-                self.verify_customer(stdscr, rec)
-                self.refresh()
             elif key in (ord("a"), ord("A")):
                 self.accept_and_process(stdscr, rec)
                 return
@@ -679,12 +676,17 @@ class AudioTui:
                     y += 1
             y += 1
 
-        footer = "v: accept  a: accept + process  m: pick existing  n: free text  l: language  g: guess/retry  c: remove  b: back"
+        footer = "a: accept + process  m: pick existing  n: free text  l: language  g: guess/retry  c: no customer  b: back"
         stdscr.addstr(h - 1, 0, footer[: w - 1], curses.A_DIM)
         stdscr.refresh()
 
     def verify_customer(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
-        """Accept the guess as it stands."""
+        """Accept the guess as it stands — the first half of accept-and-process.
+
+        Not a key of its own: picking, typing or clearing a customer already
+        counts as accepting, so a separate accept only mattered for deciding
+        now and running later, which is not a thing worth a keystroke.
+        """
         from . import context as meeting_context
 
         context = self.session_context(rec)
