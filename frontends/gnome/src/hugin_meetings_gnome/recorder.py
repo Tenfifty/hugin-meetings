@@ -74,6 +74,7 @@ class AudioRecorder:
         self.meeting_index = {}
         self.reminder_state = self._load_reminder_state()
         self._reset_reminder_state_for_today(persist=False)
+        self.prompt_open = False
         self.journal_monitor = None
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
@@ -255,8 +256,12 @@ class AudioRecorder:
             "_Yes", Gtk.ResponseType.YES,
         )
         dialog.set_default_response(Gtk.ResponseType.YES)
-        response = dialog.run()
-        dialog.destroy()
+        self.prompt_open = True
+        try:
+            response = dialog.run()
+        finally:
+            self.prompt_open = False
+            dialog.destroy()
         return response == Gtk.ResponseType.YES
 
     def _maybe_associate_current_recording(self, now):
@@ -312,6 +317,10 @@ class AudioRecorder:
             self._stop_recording()
 
     def _check_reminders(self):
+        # A dialog runs its own nested main loop, so this timer keeps firing
+        # while one is open. Without the guard an unanswered prompt stacks up.
+        if self.prompt_open:
+            return True
         try:
             self._reset_reminder_state_for_today()
             now = datetime.now()
