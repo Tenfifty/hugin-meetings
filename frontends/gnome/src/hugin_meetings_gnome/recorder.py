@@ -308,7 +308,10 @@ class AudioRecorder:
             return
 
         logging.info(
-            "Prompting to stop recording for %s (reminder %d)", prompt.title, prompt.index + 1
+            "Prompting to stop recording for %s (reminder %d, key %s)",
+            prompt.title,
+            prompt.index + 1,
+            prompt.state_key,
         )
         if prompt.meeting is not None:
             question = f'Stop recording for "{prompt.meeting.title}"?'
@@ -326,6 +329,10 @@ class AudioRecorder:
             return True
         try:
             self._reset_reminder_state_for_today()
+            # The association only describes a running recording. Letting it
+            # outlive one is what made a later, unrelated recording inherit it.
+            if not self.is_recording:
+                self._clear_recording_meeting()
             now = datetime.now()
             self._check_start_reminders(now)
             self._check_stop_reminders(now)

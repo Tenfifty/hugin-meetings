@@ -262,6 +262,73 @@ class ReminderTests(unittest.TestCase):
             )
         )
 
+    def test_a_stale_association_does_not_nag_a_later_recording(self) -> None:
+        """Replay of 2026-08-25: a 09:00-09:45 meeting, a 10:46 recording.
+
+        The recording_meeting_key outlived the recording it was made for, and
+        every half hour the tray asked whether to stop a recording that had not
+        even started when that meeting ended.
+        """
+        meeting = schedule.ScheduledMeeting(
+            key="2026-08-25T09:00:00::Vi snackar hostplan",
+            title="Vi snackar hostplan",
+            start_at=datetime(2026, 8, 25, 9, 0),
+            end_at=datetime(2026, 8, 25, 9, 45),
+            source_line="",
+        )
+        index = {meeting.key: meeting}
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 8, 25)), meeting.key
+        )
+        started = datetime(2026, 8, 25, 10, 46)
+
+        # 10:46:31 - half a minute into a recording that has nothing to do with
+        # the 09:00 meeting. Before the guard this asked to stop it.
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                index,
+                state,
+                datetime(2026, 8, 25, 10, 46, 31),
+                is_recording=True,
+                recording_started_at=started,
+            )
+        )
+        self.assertIsNone(
+            schedule.stop_reminder_candidate(
+                index, state, datetime(2026, 8, 25, 11, 15), is_recording=True,
+                recording_started_at=started,
+            )
+        )
+
+        # It is still asked about on its own terms: 30 minutes after it started.
+        prompt = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 8, 25, 11, 16), is_recording=True,
+            recording_started_at=started,
+        )
+        self.assertIsNone(prompt.meeting)
+        self.assertEqual(prompt.detail, "No journal meeting for it; started 10:46")
+
+    def test_a_recording_started_before_the_deadline_still_uses_the_meeting(self) -> None:
+        meeting = schedule.ScheduledMeeting(
+            key="m1",
+            title="Planning",
+            start_at=datetime(2026, 4, 24, 10, 0),
+            end_at=datetime(2026, 4, 24, 10, 30),
+            source_line="",
+        )
+        index = {meeting.key: meeting}
+        state = schedule.set_recording_meeting(
+            schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
+        )
+
+        # Started late, but still before the meeting was due to end.
+        prompt = schedule.stop_reminder_candidate(
+            index, state, datetime(2026, 4, 24, 10, 31), is_recording=True,
+            recording_started_at=datetime(2026, 4, 24, 10, 20),
+        )
+        self.assertEqual(prompt.meeting, meeting)
+        self.assertEqual(prompt.detail, "Scheduled end: 10:30")
+
     def test_associate_current_recording_requires_one_candidate(self) -> None:
         first = schedule.ScheduledMeeting(
             key="m1",

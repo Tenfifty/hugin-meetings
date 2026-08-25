@@ -330,11 +330,23 @@ def stop_reminder_candidate(
 
     meeting_key = state.get("recording_meeting_key")
     meeting = meeting_index.get(meeting_key) if meeting_key else None
+    first_due = (
+        first_stop_deadline(meeting, open_ended_delay=open_ended_delay)
+        if meeting is not None
+        else None
+    )
+
+    # An association can outlive the recording that earned it. A recording that
+    # began after the meeting's deadline is not the one running over it, so the
+    # meeting says nothing about when to ask - fall back to the recording.
+    if first_due is not None and recording_started_at is not None:
+        if recording_started_at >= first_due:
+            meeting, first_due = None, None
 
     if meeting is not None:
         prompt = _due_prompt(
             meeting.key,
-            first_stop_deadline(meeting, open_ended_delay=open_ended_delay),
+            first_due,
             now,
             interval=interval,
             meeting=meeting,
