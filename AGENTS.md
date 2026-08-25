@@ -36,7 +36,7 @@ python -m pip install -e ".[transcribe]" -e frontends/gnome
 ```
 
 System deps (not pip-installable): `ffmpeg` (audio), `codex` / `claude` /
-`gemini` CLI (remote summary providers), `gws` (Google Workspace CLI,
+`agy` CLI (remote summary providers), `gws` (Google Workspace CLI,
 for calendar matching). `torch`/`pyannote.audio` come in via the
 `transcribe` extra.
 
@@ -90,12 +90,12 @@ the engine only requires that the context exists.
 
 ### Key modules
 
-- **`config.py`** — `MeetingsConfig` subclasses `hugin.SharedConfig`. Loading goes through `hugin.config.load_tool("meetings", MeetingsConfig.from_merged)`, which reads `~/.config/hugin/hugin.yaml` + `meetings.yaml` and deep-merges. `HUGIN_CONFIG_DIR` overrides the dir. `load_config()` is `lru_cache(maxsize=1)`. `MeetingsConfig` exposes `state_dir` and derived subdirs (`raw_audio_dir`, `wav_cache_dir`, `speakers_dir`, `models_dir`, `transcript_json_dir`, `recorder_state_dir`). The `LLMConfig`, the codex/claude/gemini runner (`hugin.llm.run_prompt`), and the prompt resolver (`hugin.prompts.resolve_prompt`, which auto-picks `<base>_<lang>.md`) all live in the shared library.
+- **`config.py`** — `MeetingsConfig` subclasses `hugin.SharedConfig`. Loading goes through `hugin.config.load_tool("meetings", MeetingsConfig.from_merged)`, which reads `~/.config/hugin/hugin.yaml` + `meetings.yaml` and deep-merges. `HUGIN_CONFIG_DIR` overrides the dir. `load_config()` is `lru_cache(maxsize=1)`. `MeetingsConfig` exposes `state_dir` and derived subdirs (`raw_audio_dir`, `wav_cache_dir`, `speakers_dir`, `models_dir`, `transcript_json_dir`, `recorder_state_dir`). The `LLMConfig`, the codex/claude/agy runner (`hugin.llm.run_prompt`), and the prompt resolver (`hugin.prompts.resolve_prompt`, which auto-picks `<base>_<lang>.md`) all live in the shared library.
 - **`pipeline.py`** — central metadata/filename conventions and shared helpers. Most cross-module logic lives here: session scanning (`scan_raw_audio_sessions`, `scan_recordings`), filename parsing, calendar metadata markers, customer notes and the matcher prompt. When adding a new pipeline stage, read this first. `MeetingStatus` counts five steps — verify, transcribe, calendar, summarize, link — and `ready_for_pipeline` is false until a person has verified.
 - **`context.py`** — the first stage. `build_context()` guesses, `verify()` is the single write point for a person's decision (it also materializes the customer note and writes `.customer.json`), `record_applied()` notes what a stage actually used so a later change reads as drift. Imports `pipeline`, so `pipeline` may only import it inside functions.
 - **`langid.py`** — VAD-filtered language identification. Samples three 30s windows at 25/50/75% of the *speech* of each channel's largest part and votes. Never samples the opening: meetings routinely start in the local language while waiting for a guest who switches the room to English. Only the sampled regions are decoded, and the probes run as threads against one shared `base` CPU model.
 - **`transcribe.py`** / **`transcribe_part.py`** — `transcribe_part.py` is spawned as a **subprocess** per audio part (to release GPU memory between parts). Do not refactor that into an in-process call without thinking about VRAM.
-- **`summarize.py`** — dispatches to either local llama.cpp models (via `LOCAL_MODELS`) or the shared `hugin.llm.run_prompt` for codex / claude / gemini. Prompt selection uses `hugin.prompts.resolve_prompt` so `language: sv` auto-picks `prompts/summary_sv.md` when shipped.
+- **`summarize.py`** — dispatches to either local llama.cpp models (via `LOCAL_MODELS`) or the shared `hugin.llm.run_prompt` for codex / claude / agy. Prompt selection uses `hugin.prompts.resolve_prompt` so `language: sv` auto-picks `prompts/summary_sv.md` when shipped.
 - **`calendar_match.py`** — shells out to `gws`. By default only searches calendars the user owns; `--include-shared-calendars` / `--calendar <id>` override. Matching works from a `MatchWindow`, which comes either from a transcript or straight from raw audio — that is what lets the calendar be matched before transcription. Candidates are stored whole in the context (`serialize_candidate`) so the metadata block and the matcher prompt share one representation.
 - **`link.py`** — the last stage. Writes the customer link into the summary and the summary into the customer note. Refuses unverified state.
 - **`tui.py`** — curses UI that orchestrates the other CLIs. It is the pipeline driver: frontends hand off to it rather than calling the stage CLIs themselves (see *Frontend integration contract*).

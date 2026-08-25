@@ -20,7 +20,8 @@ widgets, phone apps) live under `frontends/` or in separate repos.
    confirmed language, plus a speaker diarizer, and merges the outputs into a
    unified transcript with the calendar metadata attached.
 5. **Summarize** — generates a structured meeting summary via a local
-   LLM (llama.cpp) or a remote model through Codex, Claude Code, or Gemini CLI.
+   LLM (llama.cpp) or a remote model through Codex, Claude Code, or Google
+   Antigravity (`agy`).
 6. **Publish** — writes the summary into the linked project/customer note.
 7. **Post to Slack** — posts the meeting abstract to a project Slack
    channel, with the full summary (minus personal notes) as a thread reply.
@@ -57,7 +58,7 @@ python -m pip install -e .
 # With transcription and speaker-enrollment deps
 python -m pip install -e ".[transcribe]"
 
-# Remote summarization through codex/claude/gemini uses CLI tools, no Python extra.
+# Remote summarization through codex/claude/agy uses CLI tools, no Python extra.
 
 # With local llama.cpp summarization deps
 python -m pip install -e ".[summarize-local]"
@@ -96,7 +97,7 @@ shebang that can't see the venv's CUDA stack.)
 System dependencies (not pip-installable):
 
 - `ffmpeg` (audio conversion)
-- `codex`, `claude`, or `gemini` CLI if you want to summarize via remote models
+- `codex`, `claude`, or `agy` CLI if you want to summarize via remote models
 - `gws` (Google Workspace CLI) if you want calendar matching
 
 For the optional GNOME tray widget, install `frontends/gnome/` separately
@@ -170,15 +171,15 @@ use your own versions. Matcher templates can use `{{candidate_context}}`,
 alone, before there is any meeting text).
 
 Remote and local command models use `meetings.llm.provider`, which can be
-`codex`, `claude`, `gemini`, or `local`. The default is `codex`. Claude Code
+`codex`, `claude`, `agy`, or `local`. The default is `codex`. Claude Code
 runs from a clean working directory so repo-local `CLAUDE.md` files are not
-discovered while normal Claude Code login still works. Gemini also runs from a
-clean working directory, with context discovery pointed at a missing file.
+discovered while normal Claude Code login still works. Antigravity also runs
+from a clean working directory, in plan mode with its CLI sandbox enabled.
 
 Set `summary_model` or `project_matcher.model` to `default` to let the provider
 CLI choose its configured model. Summaries default to `summary_effort: high`;
 project matching defaults to `project_matcher.effort: low`. Effort is applied
-for Codex and Claude, and ignored for Gemini.
+for Codex, Claude, and Antigravity.
 
 For local one-shot inference, use `meetings.llm.provider: local` and set
 `meetings.llm.local_command`. The prompt is written to stdin and stdout is used

@@ -28,15 +28,14 @@ meetings:
   # summarize_prompt_path: ~/Documents/notes/config/hugin/summary_prompt.md
   # "default" omits provider-specific model flags and lets the CLI choose.
   summary_model: default
-  summary_effort: high              # codex/claude only; ignored by gemini
+  summary_effort: high              # codex/claude/agy
   summary_header: "## Meeting Summary"
   # personal_section_header: "### For Me"
 
-  # LLM provider for non-local models. Supported: codex, claude, gemini, local.
+  # LLM provider for non-local models. Supported: codex, claude, agy, local.
   # Claude runs from a clean cwd by default to avoid repo-local CLAUDE.md
   # discovery while still allowing your normal Claude Code login to work.
-  # Gemini runs from a clean cwd and points context.fileName at a missing file,
-  # since the CLI has no exact --bare equivalent.
+  # Antigravity runs from a clean cwd in plan mode with its CLI sandbox enabled.
   # The local provider runs one command per request. The prompt is sent on stdin
   # and stdout is used as the response, so GPU memory is released when it exits.
   llm:
@@ -44,9 +43,9 @@ meetings:
     # clean_cwd: /tmp/hugin-llm-clean
     # codex_bin: codex
     # claude_bin: claude
-    # gemini_bin: gemini
+    # agy_bin: agy
     # claude_args: []               # e.g. ["--effort", "medium"]
-    # gemini_disable_context: true
+    # agy_args: []
     # Example local llama.cpp command. Adjust the binary, model path, and flags
     # for your installation. Use provider: local to enable it.
     # local_command:
@@ -73,7 +72,7 @@ meetings:
     # Leave empty when you do not have a special internal project/customer note.
     internal_project: ""
     model: default
-    effort: low                     # codex/claude only; ignored by gemini
+    effort: low                     # codex/claude/agy
     # prompt_path: ~/Documents/notes/config/hugin/project_matcher_prompt.md
     json_system_prompt: "Return only valid JSON."
     inactive_dir_names:
