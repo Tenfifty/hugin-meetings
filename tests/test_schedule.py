@@ -329,6 +329,64 @@ class ReminderTests(unittest.TestCase):
         self.assertEqual(prompt.meeting, meeting)
         self.assertEqual(prompt.detail, "Scheduled end: 10:30")
 
+    def test_a_start_prompt_answered_far_too_late_is_not_current(self) -> None:
+        """The 2026-08-25 root cause: a 09:00 prompt answered at 10:46.
+
+        Answering it started a recording and tagged it with a meeting that had
+        ended an hour earlier, which is what the stop reminders then nagged
+        about every half hour.
+        """
+        meeting = schedule.ScheduledMeeting(
+            key="2026-08-25T09:00:00::Vi snackar hostplan",
+            title="Vi snackar hostplan",
+            start_at=datetime(2026, 8, 25, 9, 0),
+            end_at=datetime(2026, 8, 25, 9, 45),
+            source_line="",
+        )
+
+        self.assertTrue(
+            schedule.start_reminder_is_current(meeting, datetime(2026, 8, 25, 9, 2, 50))
+        )
+        self.assertFalse(
+            schedule.start_reminder_is_current(meeting, datetime(2026, 8, 25, 10, 46))
+        )
+        # Past the 10-minute grace, even though the meeting is still running.
+        self.assertFalse(
+            schedule.start_reminder_is_current(meeting, datetime(2026, 8, 25, 9, 11))
+        )
+
+    def test_a_start_prompt_expires_at_the_end_of_its_window(self) -> None:
+        grace = schedule.ScheduledMeeting(
+            key="m1",
+            title="Long enough",
+            start_at=datetime(2026, 8, 25, 9, 0),
+            end_at=datetime(2026, 8, 25, 10, 0),
+            source_line="",
+        )
+        # Bounded by the 10-minute start grace.
+        self.assertEqual(
+            schedule.seconds_until_start_prompt_expires(grace, datetime(2026, 8, 25, 9, 0)),
+            600,
+        )
+
+        short = schedule.ScheduledMeeting(
+            key="m2",
+            title="Shorter than the grace",
+            start_at=datetime(2026, 8, 25, 9, 0),
+            end_at=datetime(2026, 8, 25, 9, 5),
+            source_line="",
+        )
+        # A meeting that ends first bounds it instead.
+        self.assertEqual(
+            schedule.seconds_until_start_prompt_expires(short, datetime(2026, 8, 25, 9, 0)),
+            300,
+        )
+        # Never zero or negative - a dialog with no life left still needs a tick.
+        self.assertEqual(
+            schedule.seconds_until_start_prompt_expires(short, datetime(2026, 8, 25, 9, 30)),
+            1,
+        )
+
     def test_associate_current_recording_requires_one_candidate(self) -> None:
         first = schedule.ScheduledMeeting(
             key="m1",

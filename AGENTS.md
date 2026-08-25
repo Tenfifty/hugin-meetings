@@ -151,7 +151,12 @@ pipeline — it hands off to the TUI, which drives transcription/summarization.
    `RecordingSession.started_at`) so a recording that never matched a journal
    meeting is asked about too; without it those get no stop prompt at all.
    Mark a prompt with `prompt.state_key`, not `meeting.key`, or every repeat
-   is suppressed.
+   is suppressed. A start prompt must expire — pass
+   `seconds_until_start_prompt_expires()` as the dialog's timeout and re-check
+   `start_reminder_is_current()` before tagging the recording. A modal dialog
+   holds a nested main loop, so one left unanswered stalls every other
+   reminder, and a late yes would otherwise associate a fresh recording with a
+   meeting that ended hours ago.
 
 Don't expand this surface casually — frontends live in other repos and would break.
 

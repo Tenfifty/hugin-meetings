@@ -240,7 +240,7 @@ class AudioRecorder:
             logging.exception("Failed during audio device change check")
         return True
 
-    def _prompt_yes_no(self, title, text, secondary):
+    def _prompt_yes_no(self, title, text, secondary, timeout_seconds=None):
         dialog = Gtk.MessageDialog(
             transient_for=None,
             flags=0,
@@ -256,11 +256,20 @@ class AudioRecorder:
             "_Yes", Gtk.ResponseType.YES,
         )
         dialog.set_default_response(Gtk.ResponseType.YES)
+        # An unanswered dialog holds a nested main loop, which stalls every
+        # other reminder behind it. A prompt that has gone stale answers itself.
+        expiry = None
+        if timeout_seconds:
+            expiry = GLib.timeout_add_seconds(
+                timeout_seconds, lambda: dialog.response(Gtk.ResponseType.NO) or False
+            )
         self.prompt_open = True
         try:
             response = dialog.run()
         finally:
             self.prompt_open = False
+            if expiry:
+                GLib.source_remove(expiry)
             dialog.destroy()
         return response == Gtk.ResponseType.YES
 
@@ -290,10 +299,26 @@ class AudioRecorder:
             "Start recording?",
             f'Record "{meeting.title}" now?',
             f"Scheduled time: {meeting.time_label}",
+            timeout_seconds=meeting_schedule.seconds_until_start_prompt_expires(
+                meeting, now
+            ),
         )
         self._mark_prompted("start", meeting.key)
-        if should_record and not self.is_recording:
+        if not should_record or self.is_recording:
+            return
+
+        # The answer can arrive long after the question. Record either way, but
+        # only tag the recording with the meeting while that is still true.
+        answered_at = datetime.now()
+        if meeting_schedule.start_reminder_is_current(meeting, answered_at):
             self._start_recording(meeting.key)
+        else:
+            logging.info(
+                "Start prompt for %s answered at %s, too late to associate",
+                meeting.title,
+                answered_at.strftime("%H:%M:%S"),
+            )
+            self._start_recording()
 
     def _check_stop_reminders(self, now):
         self._maybe_associate_current_recording(now)

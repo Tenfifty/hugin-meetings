@@ -315,6 +315,37 @@ def _due_prompt(
     )
 
 
+def start_reminder_is_current(
+    meeting: ScheduledMeeting,
+    now: datetime,
+    *,
+    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
+) -> bool:
+    """Whether a start prompt answered at ``now`` still describes ``meeting``.
+
+    A prompt can sit unanswered for hours. The yes that finally arrives is a
+    yes to recording, not evidence that this is still the meeting being
+    recorded - tagging the recording with it would backdate the association.
+    """
+    age = (now - meeting.start_at).total_seconds()
+    if not 0 <= age <= grace_seconds:
+        return False
+    return meeting.end_at is None or now <= meeting.end_at
+
+
+def seconds_until_start_prompt_expires(
+    meeting: ScheduledMeeting,
+    now: datetime,
+    *,
+    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
+) -> int:
+    """How long a start prompt for ``meeting`` is still worth showing."""
+    deadline = meeting.start_at + timedelta(seconds=grace_seconds)
+    if meeting.end_at is not None:
+        deadline = min(deadline, meeting.end_at)
+    return max(1, int((deadline - now).total_seconds()))
+
+
 def stop_reminder_candidate(
     meeting_index: dict[str, ScheduledMeeting],
     state: dict[str, Any],
