@@ -46,6 +46,7 @@ class MeetingContext:
     calendar: dict[str, Any] | None = None
     customer: dict[str, Any] | None = None
     note: str = ""
+    customer_note: str = ""
     verified: bool = False
     verified_at: str = ""
     applied: dict[str, Any] | None = None
@@ -75,6 +76,7 @@ class MeetingContext:
             "calendar": self.calendar,
             "customer": self.customer,
             "note": self.note,
+            "customer_note": self.customer_note,
             "verified": self.verified,
             "verified_at": self.verified_at,
             "applied": self.applied,
@@ -88,6 +90,7 @@ class MeetingContext:
             calendar=payload.get("calendar"),
             customer=payload.get("customer"),
             note=payload.get("note") or "",
+            customer_note=payload.get("customer_note") or "",
             verified=bool(payload.get("verified")),
             verified_at=payload.get("verified_at") or "",
             applied=payload.get("applied"),
@@ -217,12 +220,19 @@ def calendar_fields(context: "MeetingContext") -> dict[str, str]:
     return calendar_match.metadata_fields(block) if block else {}
 
 
-def _guess_customer(fields: dict[str, str], model: str) -> dict[str, Any] | None:
+def _guess_customer(fields: dict[str, str], model: str) -> tuple[dict[str, Any] | None, str]:
     if not fields:
-        return None
-    decision = pipeline.suggest_customer_from_calendar(fields, model)
+        return None, "no calendar event to match on"
+    try:
+        decision = pipeline.suggest_customer_from_calendar(fields, model)
+    except FileNotFoundError as exc:
+        # The matcher CLI is not on PATH. Common when a context guess is spawned
+        # from a desktop session rather than a login shell - see llm.codex_bin.
+        return None, f"matcher not found: {exc.filename or exc}"
+    except Exception as exc:
+        return None, f"customer guess failed: {exc}"
     state = pipeline.state_from_decision(decision, source="calendar")
-    return pipeline.serialize_customer_state(state)
+    return pipeline.serialize_customer_state(state), ""
 
 
 def build_context(
@@ -249,7 +259,7 @@ def build_context(
     # No event means no domains, no title and no description — the matcher would
     # be guessing from nothing, so leave the customer for the operator instead.
     if context.calendar and not skip_customer:
-        context.customer = _guess_customer(
+        context.customer, context.customer_note = _guess_customer(
             calendar_fields(context), model or pipeline.DEFAULT_CUSTOMER_MODEL
         )
     return context

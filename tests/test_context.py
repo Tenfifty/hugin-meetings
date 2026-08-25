@@ -122,5 +122,45 @@ class ContextRoundTripTests(unittest.TestCase):
         self.assertEqual(empty.language_value, meeting_context.load_config().language)
 
 
+class CustomerGuessTests(unittest.TestCase):
+    """A failed guess must not cost the session its context."""
+
+    FIELDS = {"Event": "Notana och AI", "Attendees": "amer@notanacare.io"}
+
+    def test_a_missing_matcher_binary_leaves_the_customer_empty(self) -> None:
+        with patch.object(
+            meeting_context.pipeline,
+            "suggest_customer_from_calendar",
+            side_effect=FileNotFoundError(2, "No such file or directory", "codex"),
+        ):
+            customer, note = meeting_context._guess_customer(self.FIELDS, "m")
+
+        self.assertIsNone(customer)
+        self.assertEqual(note, "matcher not found: codex")
+
+    def test_any_other_matcher_failure_is_recorded_not_raised(self) -> None:
+        with patch.object(
+            meeting_context.pipeline,
+            "suggest_customer_from_calendar",
+            side_effect=RuntimeError("codex prompt failed"),
+        ):
+            customer, note = meeting_context._guess_customer(self.FIELDS, "m")
+
+        self.assertIsNone(customer)
+        self.assertEqual(note, "customer guess failed: codex prompt failed")
+
+    def test_no_calendar_event_says_so(self) -> None:
+        customer, note = meeting_context._guess_customer({}, "m")
+        self.assertIsNone(customer)
+        self.assertEqual(note, "no calendar event to match on")
+
+    def test_the_note_survives_a_round_trip(self) -> None:
+        ctx = meeting_context.MeetingContext(
+            session_id="20260825-082229", customer_note="matcher not found: codex"
+        )
+        restored = meeting_context.MeetingContext.from_dict(ctx.to_dict())
+        self.assertEqual(restored.customer_note, "matcher not found: codex")
+
+
 if __name__ == "__main__":
     unittest.main()

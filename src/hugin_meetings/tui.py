@@ -659,6 +659,7 @@ class AudioTui:
                     f"Action: {state.action if state else '-'}  confidence: {state.confidence if state else '-'}",
                     f"Model/source: {state.model if state else '-'} / {state.source if state else '-'}",
                     f"Basis: {(state.rationale if state else '') or '-'}",
+                    f"Note: {context.customer_note or '-'}",
                 ],
             ),
         ]
