@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 from contextlib import contextmanager
 import gc
 import json
@@ -19,6 +20,8 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
+import traceback
 from pathlib import Path
 
 from .cli_utils import get_hf_token
@@ -86,7 +89,15 @@ def _release_oom_traceback(exc: BaseException) -> None:
     ``empty_cache()`` free nothing and the GPU stays pinned for the entire slow
     CPU run — measured at 7.6 GB of 8 GB retained with the GPU fully idle.
     """
-    exc.__traceback__ = None
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        current.__traceback__ = None
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
 
 @contextmanager
@@ -191,44 +202,145 @@ def is_silent(path: Path) -> bool:
         return False
 
 
-def transcribe(audio_path: Path, model, device: str, language: str) -> dict:
-    """Transcribe a single audio file in a known language. Returns whisperx result dict.
-
-    The language is decided by the context stage and confirmed by a person, so
-    whisper is never asked to guess it here — its own detection reads the first
-    30 seconds of the file, which on a meeting that opens with people connecting
-    is 30 seconds of empty room.
-    """
+def _cuda_memory_stats() -> str:
+    """Torch peaks exclude CTranslate2; driver free memory covers both."""
     import torch
+
+    try:
+        if not torch.cuda.is_available():
+            return "cuda=unavailable"
+        free, total = torch.cuda.mem_get_info()
+        values = {
+            "free": free, "total": total,
+            "allocated": torch.cuda.memory_allocated(),
+            "reserved": torch.cuda.memory_reserved(),
+            "peak_allocated": torch.cuda.max_memory_allocated(),
+            "peak_reserved": torch.cuda.max_memory_reserved(),
+        }
+        return " ".join(f"{key}_MiB={value / 2**20:.0f}" for key, value in values.items())
+    except Exception as exc:
+        return f"cuda_stats_unavailable={exc}"
+
+
+def _log_oom(exc: BaseException, phase: str) -> None:
+    # Log before detaching frames, including NeMo's internal failing stage.
+    print(f"    OOM phase={phase} {_cuda_memory_stats()}", file=sys.stderr, flush=True)
+    traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+    _release_oom_traceback(exc)
+
+
+def _clear_model_memory() -> None:
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def transcribe(
+    audio_path: Path, model, device: str, language: str,
+    *, batch_state: dict | None = None,
+) -> dict:
+    """Run ASR only; align after all tracks have released Whisper and VAD.
+
+    Keep a working reduced GPU batch for subsequent tracks in this part.
+    The verified context supplies the language, never Whisper's first-window
+    language detection.
+    """
     import whisperx
 
     audio = whisperx.load_audio(str(audio_path))
-
-    for batch_size in (8, 4, 2):
+    batch_state = {} if batch_state is None else batch_state
+    start_batch = batch_state.get("batch_size", 4)
+    batches = [batch for batch in (4, 2, 1) if batch <= start_batch] if device == "cuda" else [8]
+    print(f"    ASR input={audio_path.name} device={device} batch_size={batches[0]}", flush=True)
+    for batch_size in batches:
         try:
             result = model.transcribe(audio, batch_size=batch_size, language=language)
-            break
-        except RuntimeError as e:
-            if "out of memory" in str(e) and batch_size > 2:
-                print(f"    OOM at batch_size={batch_size}, retrying with {batch_size // 2}...")
-                torch.cuda.empty_cache()
-            else:
+            if device == "cuda":
+                batch_state["batch_size"] = batch_size
+            return result
+        except Exception as exc:
+            if device != "cuda" or not _is_oom(exc) or batch_size == batches[-1]:
                 raise
+            _log_oom(exc, f"asr:{audio_path.name}:batch={batch_size}")
+            print(f"    Retrying ASR with batch_size={batch_size // 2}")
+            _clear_model_memory()
+    raise AssertionError("No ASR batch attempted")
 
-    # Word-level alignment. whisperx auto-selects a default align model for
-    # known languages; ALIGN_MODELS supplies (or overrides) one for languages
-    # whisperx no longer ships a default for, e.g. Swedish.
-    align_model, metadata = whisperx.load_align_model(
+
+def load_alignment_model(device: str, language: str):
+    import whisperx
+
+    return whisperx.load_align_model(
         language_code=language, device=device,
         model_name=ALIGN_MODELS.get(language),
     )
-    result = whisperx.align(
-        result["segments"], align_model, metadata, audio, device,
+
+
+def align_transcription(audio_path: Path, result: dict, device: str, alignment_model) -> dict:
+    """Align raw ASR, preserving the original segments for a CPU retry."""
+    import whisperx
+
+    audio = whisperx.load_audio(str(audio_path))
+    align_model, metadata = alignment_model
+    return whisperx.align(
+        copy.deepcopy(result["segments"]), align_model, metadata, audio, device,
         return_char_alignments=False,
     )
-    del align_model
-    torch.cuda.empty_cache()
-    return result
+
+
+def _run_model_stage(
+    phase: str, tracks: dict, device: str, load_model, run,
+    *, skip_load_errors: bool = False, skip_empty: bool = False,
+) -> dict:
+    """Load one stage, reuse its model, and retry only that stage on CPU.
+
+    Exceptions are detached before releasing a failed GPU model. Each call
+    receives the preferred device independently of earlier stages' fallbacks.
+    """
+    model = None
+    results = {}
+    started = time.monotonic()
+    if device == "cuda":
+        import torch
+
+        torch.cuda.reset_peak_memory_stats()
+    print(f"  Stage {phase}: device={device} {_cuda_memory_stats()}", flush=True)
+    try:
+        for channel, (path, previous) in tracks.items():
+            if skip_empty and not previous.get("segments"):
+                results[channel] = previous
+                print(f"    {phase}: skipping {path.name}, no transcript segments")
+                continue
+            print(f"    {phase}: starting {channel} {path.name}", flush=True)
+            while True:
+                operation = "load" if model is None else channel
+                try:
+                    if model is None:
+                        model = load_model(device)
+                    operation = channel
+                    results[channel] = run(path, previous, model, device)
+                    if isinstance(results[channel], dict):
+                        print(f"    {phase}: completed {path.name}, segments={len(results[channel].get('segments', []))}", flush=True)
+                    break
+                except Exception as exc:
+                    oom = _is_oom(exc)
+                    if skip_load_errors and operation == "load" and isinstance(exc, RuntimeError) and not oom:
+                        print(f"  Skipping {phase} ({exc})")
+                        return {name: results.get(name, previous) for name, (_, previous) in tracks.items()}
+                    if device != "cuda" or not oom:
+                        raise
+                    _log_oom(exc, f"{phase}:{operation}:{path.name}")
+                    model = None
+                    _clear_model_memory()
+                    print(f"    {phase} falling back to CPU; completed tracks retained.", flush=True)
+                    device = "cpu"
+        return results
+    finally:
+        model = None
+        _clear_model_memory()
+        print(f"  Stage {phase}: elapsed_s={time.monotonic() - started:.1f} {_cuda_memory_stats()}", flush=True)
 
 
 def _annotation_to_df(annotation) -> pd.DataFrame:
@@ -469,7 +581,12 @@ def diarize(
         from whisperx.diarize import assign_word_speakers
 
         wav_path = _ensure_pcm_wav(audio_path)
+        print(
+            f"    NeMo input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
+            f"device={device} {_cuda_memory_stats()}", flush=True,
+        )
         annotation = diarizer_model(str(wav_path))
+        print(f"    NeMo output speakers={len(annotation.labels())}", flush=True)
         result = assign_word_speakers(_annotation_to_df(annotation), result)
         if speaker_id_model is not None:
             embeddings = build_speaker_centroids_from_result(
@@ -775,197 +892,70 @@ def process_part(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     hf_token = get_hf_token() if do_diarize else None
-    sys_result = None
-    mic_result = None
-    diarization_device = device
+    tracks = {"mic": (mic_part, None)}
+    if sys_part:
+        if is_silent(sys_part):
+            print(f"  Part p{part_index:02d}: system audio is silent, skipping {sys_part.name}")
+        else:
+            tracks["sys"] = (sys_part, None)
+    else:
+        print(f"  Part p{part_index:02d}: no matching sys file found")
 
     def _load_whisper(dev: str):
         with _trusted_model_load_context():
             return whisperx.load_model(
-                MODEL,
-                dev,
+                MODEL, dev,
                 compute_type="float16" if dev == "cuda" else "int8",
                 language=language,
             )
 
-    def _run_whisper(audio_part: Path):
-        nonlocal model, device, diarization_device
-        try:
-            return transcribe(audio_part, model, device, language)
-        except Exception as exc:
-            if not _is_oom(exc) or device != "cuda":
-                raise
-            print(f"    Whisper OOM on CUDA for {audio_part.name}; falling back to CPU/int8 (slow).")
-            _release_oom_traceback(exc)
-            try:
-                del model
-            except NameError:
-                pass
-            gc.collect()
-            torch.cuda.empty_cache()
-            device = "cpu"
-            diarization_device = "cpu"
-            model = _load_whisper(device)
-            return transcribe(audio_part, model, device, language)
+    def _with_results(results):
+        return {channel: (path, results[channel]) for channel, (path, _) in tracks.items()}
 
-    print(f"  Loading model: {MODEL} (language: {language})")
+    batch_state = {}
+    print(f"  Loading ASR model: {MODEL} (language: {language})", flush=True)
     try:
-        try:
-            model = _load_whisper(device)
-        except Exception as exc:
-            if not _is_oom(exc) or device != "cuda":
-                raise
-            print("    Whisper OOM loading on CUDA; falling back to CPU/int8 (slow).")
-            _release_oom_traceback(exc)
-            gc.collect()
-            torch.cuda.empty_cache()
-            device = "cpu"
-            diarization_device = "cpu"
-            model = _load_whisper(device)
-
-        print(f"  Part p{part_index:02d}: transcribing mic {mic_part.name}")
-        mic_result = _run_whisper(mic_part)
-        print(
-            f"    {len(mic_result.get('segments', []))} segments, "
-            f"language: {mic_result.get('language', '?')}"
+        results = _run_model_stage(
+            "asr", tracks, device, _load_whisper,
+            lambda path, previous, model, dev: transcribe(
+                path, model, dev, language, batch_state=batch_state,
+            ),
         )
-
-        if sys_part:
-            if is_silent(sys_part):
-                print(f"  Part p{part_index:02d}: system audio is silent, skipping {sys_part.name}")
-            else:
-                print(f"  Part p{part_index:02d}: transcribing sys {sys_part.name}")
-                sys_result = _run_whisper(sys_part)
-                print(f"    {len(sys_result.get('segments', []))} segments")
-        else:
-            print(f"  Part p{part_index:02d}: no matching sys file found")
-
-        del model
-        if device == "cuda":
-            gc.collect()
-            torch.cuda.empty_cache()
-
-        diarizer_model = None
+        # _run_model_stage has dropped Whisper AND its VAD before any aligner
+        # is loaded. Reload audio here instead of retaining both PCM tracks.
+        results = _run_model_stage(
+            "alignment", _with_results(results), device,
+            lambda dev: load_alignment_model(dev, language),
+            lambda path, previous, model, dev: align_transcription(path, previous, dev, model),
+            skip_empty=True,
+        )
         if do_diarize:
-            try:
-                diarizer_model = load_diarizer(diarizer_name, diarization_device, hf_token)
-            except RuntimeError as exc:
-                print(f"  Skipping diarization ({exc})")
-                diarizer_model = None
-
-        if diarizer_model is not None:
-            print(f"  Part p{part_index:02d}: diarizing mic with {diarizer_name}...")
-            try:
-                mic_result = diarize(
-                    mic_part,
-                    mic_result,
-                    diarization_device,
-                    diarizer_name,
-                    diarizer_model,
-                    hf_token,
-                )
-            except Exception as exc:
-                if not _is_oom(exc) or diarization_device != "cuda":
-                    raise
-                print(f"    {diarizer_name} diarization OOM on CUDA for mic, retrying with a fresh CPU diarizer...")
-                _release_oom_traceback(exc)
-                diarizer_model = None
-                gc.collect()
-                torch.cuda.empty_cache()
-                diarization_device = "cpu"
-                diarizer_model = load_diarizer(diarizer_name, diarization_device, hf_token)
-                mic_result = diarize(
-                    mic_part,
-                    mic_result,
-                    diarization_device,
-                    diarizer_name,
-                    diarizer_model,
-                    hf_token,
-                )
-            if device == "cuda":
-                gc.collect()
-                torch.cuda.empty_cache()
-            if sys_result is not None and sys_part is not None:
-                print(f"  Part p{part_index:02d}: diarizing sys with {diarizer_name}...")
-                try:
-                    sys_result = diarize(
-                        sys_part,
-                        sys_result,
-                        diarization_device,
-                        diarizer_name,
-                        diarizer_model,
-                        hf_token,
-                    )
-                except Exception as exc:
-                    if not _is_oom(exc) or diarization_device != "cuda":
-                        raise
-                    print(f"    {diarizer_name} diarization OOM on CUDA, retrying with a fresh CPU diarizer...")
-                    _release_oom_traceback(exc)
-                    diarizer_model = None
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    diarization_device = "cpu"
-                    diarizer_model = load_diarizer(diarizer_name, diarization_device, hf_token)
-                    sys_result = diarize(
-                        sys_part,
-                        sys_result,
-                        diarization_device,
-                        diarizer_name,
-                        diarizer_model,
-                        hf_token,
-                    )
-                if device == "cuda":
-                    gc.collect()
-                    torch.cuda.empty_cache()
-
-        diarizer_model = None
-        if device == "cuda":
-            gc.collect()
-            torch.cuda.empty_cache()
+            results = _run_model_stage(
+                f"diarization:{diarizer_name}", _with_results(results), device,
+                lambda dev: load_diarizer(diarizer_name, dev, hf_token),
+                lambda path, previous, model, dev: diarize(
+                    path, previous, dev, diarizer_name, model, hf_token,
+                ),
+                skip_load_errors=True, skip_empty=True,
+            )
 
         if do_diarize and diarizer_name == "nemo" and hf_token and SPEAKERS_DIR.exists():
-            speaker_id_device = device
-            print("  Loading pyannote embedding model for speaker naming...")
-            speaker_id_model = load_pyannote_embedding_model(hf_token, speaker_id_device)
+            results = _run_model_stage(
+                "speaker-naming", _with_results(results), device,
+                lambda dev: load_pyannote_embedding_model(hf_token, dev),
+                lambda path, previous, model, dev: apply_enrolled_speaker_names(
+                    path, previous, model, dev,
+                ),
+            )
 
-            def _name_speakers(audio_path, result):
-                nonlocal speaker_id_model, speaker_id_device
-                try:
-                    return apply_enrolled_speaker_names(
-                        audio_path, result, speaker_id_model, speaker_id_device
-                    )
-                except Exception as exc:
-                    if not _is_oom(exc) or speaker_id_device != "cuda":
-                        raise
-                    print("    Speaker-naming OOM on CUDA; reloading embedding model on CPU.")
-                    _release_oom_traceback(exc)
-                    speaker_id_model = None
-                    gc.collect()
-                    torch.cuda.empty_cache()
-                    speaker_id_device = "cpu"
-                    speaker_id_model = load_pyannote_embedding_model(hf_token, speaker_id_device)
-                    return apply_enrolled_speaker_names(
-                        audio_path, result, speaker_id_model, speaker_id_device
-                    )
-
-            mic_result = _name_speakers(mic_part, mic_result)
-            if sys_result is not None and sys_part is not None:
-                sys_result = _name_speakers(sys_part, sys_result)
-            speaker_id_model = None
-            if device == "cuda":
-                gc.collect()
-                torch.cuda.empty_cache()
-
-        part_entries = merge_channels(mic_result, sys_result, mic_part.stem)
+        part_entries = merge_channels(results["mic"], results.get("sys"), mic_part.stem)
         return _relabel_anonymous_entries(
-            part_entries,
-            part_index=part_index,
-            use_part_suffix=use_part_suffix,
+            part_entries, part_index=part_index, use_part_suffix=use_part_suffix,
         )
     finally:
         if diarizer_name == "nemo":
             _cleanup_pcm_wav(mic_part)
-            _cleanup_pcm_wav(sys_part if sys_result is not None else None)
+            _cleanup_pcm_wav(sys_part)
 
 
 def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str = DEFAULT_DIARIZER):
