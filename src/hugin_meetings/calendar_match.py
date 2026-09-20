@@ -31,7 +31,6 @@ METADATA_START = "<!-- calendar-metadata:start -->"
 METADATA_END = "<!-- calendar-metadata:end -->"
 SEGMENT_TS_RE = re.compile(r"\*\*\[(\d{2}):(\d{2}):(\d{2})\]")
 DEFAULT_GWS_CONFIG_DIR = load_config().gws_config_dir or (Path.home() / ".config" / "gws")
-DEFAULT_GWS_CREDENTIALS_FILE = DEFAULT_GWS_CONFIG_DIR / "credentials.json"
 DEFAULT_GWS_BIN = load_config().gws_bin
 
 DEFAULT_LOOKBACK = timedelta(hours=4)
@@ -245,9 +244,12 @@ def stored_candidates(transcript_path: Path) -> list[Candidate] | None:
 def gws_environment() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", str(DEFAULT_GWS_CONFIG_DIR))
-    env.setdefault(
-        "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE", str(DEFAULT_GWS_CREDENTIALS_FILE)
-    )
+    # Let gws use its encrypted store (credentials.enc) via the file keyring
+    # backend. Never point GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE at the
+    # plaintext credentials.json: gws prefers that file when the variable is
+    # set, and a stale refresh token in it produces a persistent invalid_grant
+    # that re-running `gws auth login` cannot fix (diagnosed 2026-06-27).
+    env.setdefault("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file")
     return env
 
 
