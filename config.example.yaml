@@ -33,7 +33,7 @@ meetings:
   # personal_section_header: "### For Me"
 
   # LLM provider for non-local models. Supported: codex, claude, agy, local.
-  # Claude runs from a clean cwd by default to avoid repo-local CLAUDE.md
+  # Claude runs from a clean cwd by default to avoid repo-local CLAUDE.md/AGENTS.md
   # discovery while still allowing your normal Claude Code login to work.
   # Antigravity runs from a clean cwd in plan mode with its CLI sandbox enabled.
   # The local provider runs one command per request. The prompt is sent on stdin

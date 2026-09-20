@@ -172,7 +172,7 @@ alone, before there is any meeting text).
 
 Remote and local command models use `meetings.llm.provider`, which can be
 `codex`, `claude`, `agy`, or `local`. The default is `codex`. Claude Code
-runs from a clean working directory so repo-local `CLAUDE.md` files are not
+runs from a clean working directory so repo-local `CLAUDE.md`/`AGENTS.md` files are not
 discovered while normal Claude Code login still works. Antigravity also runs
 from a clean working directory, in plan mode with its CLI sandbox enabled.
 
