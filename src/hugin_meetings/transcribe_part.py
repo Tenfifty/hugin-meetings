@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-part-suffix", action="store_true", help="Suffix anonymous speakers with the part id")
     parser.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     parser.add_argument(
+        "--allowed-speakers",
+        help="JSON list of enrolled names this part may be labelled with "
+        "(from the session's calendar event). Omit to allow every ready speaker.",
+    )
+    parser.add_argument(
         "--diarizer",
         choices=("nemo", "whisperx"),
         default="nemo",
@@ -42,6 +47,9 @@ def main() -> int:
         language=args.language,
         do_diarize=not args.no_diarize,
         diarizer_name=args.diarizer,
+        allowed_speakers=(
+            json.loads(args.allowed_speakers) if args.allowed_speakers is not None else None
+        ),
     )
     Path(args.json_out).write_text(json.dumps(entries, indent=2, ensure_ascii=False))
     return 0

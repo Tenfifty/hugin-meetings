@@ -22,7 +22,9 @@ import sysconfig
 import tempfile
 import time
 import traceback
+import unicodedata
 from pathlib import Path
+from typing import Iterable
 
 from .cli_utils import get_hf_token
 from .pipeline import (
@@ -64,7 +66,7 @@ DEFAULT_DIARIZER = "nemo"
 NEMO_MSDD_INFER_BATCH_SIZE = 4
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
-SPEAKER_MATCH_THRESHOLD = 0.5  # cosine similarity threshold for speaker matching
+SPEAKER_MATCH_THRESHOLD = 0.6  # cosine to an enrolled centroid; two enrolled women sit 0.53 apart, so 0.5 did not separate same-sex speakers
 MIN_ID_SEGMENT_DURATION = 2.5
 MAX_ID_SEGMENT_DURATION = 30.0
 MIN_ID_WORDS = 4
@@ -550,13 +552,14 @@ def apply_enrolled_speaker_names(
     result: dict | None,
     emb_model,
     device: str,
+    allowed_speakers: Iterable[str] | None = None,
 ) -> dict | None:
     if result is None:
         return None
     embeddings = build_speaker_centroids_from_result(audio_path, result, emb_model, device)
     if not embeddings:
         return result
-    name_map = match_speakers(embeddings)
+    name_map = match_speakers(embeddings, allowed_speakers)
     if name_map:
         print(f"    Speaker matches: {name_map}")
         result = _rename_result_speakers(result, name_map)
@@ -571,8 +574,13 @@ def diarize(
     diarizer_model,
     hf_token: str | None,
     speaker_id_model=None,
+    allowed_speakers: Iterable[str] | None = None,
 ) -> dict:
-    """Add speaker labels to transcription result using the selected diarizer."""
+    """Add speaker labels to transcription result using the selected diarizer.
+
+    ``allowed_speakers`` restricts which enrolled names a label may become;
+    see ``speaker_allowlist``. ``None`` means every ready speaker.
+    """
     if not result.get("segments"):
         print("    Skipping diarization: transcript has no segments")
         return result
@@ -593,7 +601,7 @@ def diarize(
                 wav_path, result, speaker_id_model, device
             )
             if embeddings:
-                name_map = match_speakers(embeddings)
+                name_map = match_speakers(embeddings, allowed_speakers)
                 if name_map:
                     print(f"    Speaker matches: {name_map}")
                     result = _rename_result_speakers(result, name_map)
@@ -611,7 +619,7 @@ def diarize(
 
     # Match anonymous speakers against enrolled voices
     if embeddings:
-        name_map = match_speakers(embeddings)
+        name_map = match_speakers(embeddings, allowed_speakers)
         if name_map:
             print(f"    Speaker matches: {name_map}")
             for seg in result.get("segments", []):
@@ -671,28 +679,127 @@ def _words_to_segment(words: list[dict], speaker: str) -> dict:
 AMBIGUITY_GAP = 0.1  # reject if gap between best and second-best < this
 
 
-def match_speakers(embeddings: dict) -> dict[str, str]:
-    """Match diarization speaker embeddings against enrolled speakers.
-    Returns a map of SPEAKER_XX -> enrolled name.
-    Rejects ambiguous matches where two enrolled speakers are close."""
-    import numpy as np
-
+def _ready_speaker_metas() -> list[tuple[Path, dict]]:
+    """(dir, meta) for every enrolled speaker whose profile is ready."""
     if not SPEAKERS_DIR.exists():
-        return {}
-
-    # Load centroids for ready speakers
-    enrolled = {}
-    for d in SPEAKERS_DIR.iterdir():
+        return []
+    out = []
+    for d in sorted(SPEAKERS_DIR.iterdir()):
         if not d.is_dir():
             continue
         meta_path = d / "meta.json"
-        centroid_path = d / "centroid.npy"
-        if not meta_path.exists() or not centroid_path.exists():
+        if not meta_path.exists() or not (d / "centroid.npy").exists():
             continue
-        meta = json.loads(meta_path.read_text())
-        if not meta.get("ready", False):
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError:
             continue
-        enrolled[meta.get("display_name", d.name)] = np.load(centroid_path)
+        if meta.get("ready", False):
+            out.append((d, meta))
+    return out
+
+
+def name_tokens(text: str) -> set[str]:
+    """Lower-cased, accent-folded word tokens: 'Pär Blixt' -> {'par', 'blixt'}.
+
+    Emails are cut at '@' first so 'charlotte.eriksson@x.se' tokenizes to the
+    name it stands for. 'ö' folds to 'o', so 'Öhlin' and 'ohlin' agree.
+    """
+    text = text.split("@", 1)[0]
+    folded = unicodedata.normalize("NFKD", text)
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    tokens = {t for t in "".join(
+        ch if ch.isalnum() else " " for ch in folded.lower()
+    ).split() if t}
+    return tokens
+
+
+def attendee_matches_speaker(attendee: str, speaker_name: str) -> bool:
+    """Does an attendee entry (display name or email) denote this enrolled speaker?
+
+    Two-plus-token attendees must equal the full name. A single token (a bare
+    first name, or an email like 'amer@…') matches if it is one of the
+    speaker's name tokens — loose, but the voice still has to match on top.
+    """
+    a = name_tokens(attendee)
+    s = name_tokens(speaker_name)
+    if not a or not s:
+        return False
+    if len(a) >= 2:
+        return a == s
+    return a <= s
+
+
+def event_attendee_names(event: dict) -> list[str]:
+    """Attendee display names / emails from a stored calendar event, organizer included."""
+    names = []
+    for attendee in event.get("attendees") or []:
+        name = attendee.get("displayName") or attendee.get("email")
+        if name:
+            names.append(name)
+    organizer = event.get("organizer") or {}
+    name = organizer.get("displayName") or organizer.get("email")
+    if name and name not in names:
+        names.append(name)
+    return names
+
+
+def speaker_allowlist(context) -> list[str]:
+    """Enrolled names a transcript of this session may be labelled with.
+
+    Voice matching alone cannot say "nobody I know": an unknown voice lands
+    on whichever enrolled centroid is nearest, and with few speakers of the
+    same sex enrolled that clears the 0.5 threshold routinely. Between April
+    and September 2026 eight meetings had a woman labelled with the one
+    enrolled female name although she was in none of their invitations. So
+    the calendar decides who is a candidate, and the voice only decides
+    which of them it is.
+
+    Speakers whose meta has ``always_candidate: true`` (David) are candidates
+    regardless. With no attendee list to go on, only those are.
+    """
+    from . import context as meeting_context
+
+    always = []
+    others = []
+    for _, meta in _ready_speaker_metas():
+        name = meta.get("display_name")
+        if not name:
+            continue
+        (always if meta.get("always_candidate") else others).append(name)
+
+    candidate = meeting_context.best_candidate(context) if context is not None else None
+    attendees = event_attendee_names(candidate.event) if candidate else []
+    if not attendees:
+        return always
+
+    allowed = list(always)
+    for name in others:
+        if any(attendee_matches_speaker(a, name) for a in attendees):
+            allowed.append(name)
+    return allowed
+
+
+def match_speakers(
+    embeddings: dict, allowed_speakers: Iterable[str] | None = None
+) -> dict[str, str]:
+    """Match diarization speaker embeddings against enrolled speakers.
+    Returns a map of SPEAKER_XX -> enrolled name.
+    Rejects ambiguous matches where two enrolled speakers are close.
+
+    ``allowed_speakers`` limits the candidates (see ``speaker_allowlist``);
+    ``None`` means every ready speaker, an empty list means nobody."""
+    import numpy as np
+
+    allowed = None if allowed_speakers is None else set(allowed_speakers)
+
+    # Load centroids for ready speakers
+    enrolled = {}
+    for d, meta in _ready_speaker_metas():
+        name = meta.get("display_name", d.name)
+        if allowed is not None and name not in allowed:
+            continue
+        enrolled[name] = np.load(d / "centroid.npy")
 
     if not enrolled:
         return {}
@@ -884,6 +991,7 @@ def process_part(
     language: str,
     do_diarize: bool = True,
     diarizer_name: str = DEFAULT_DIARIZER,
+    allowed_speakers: Iterable[str] | None = None,
 ) -> list[dict]:
     _activate_cuda_library_path()
 
@@ -935,6 +1043,7 @@ def process_part(
                 lambda dev: load_diarizer(diarizer_name, dev, hf_token),
                 lambda path, previous, model, dev: diarize(
                     path, previous, dev, diarizer_name, model, hf_token,
+                    allowed_speakers=allowed_speakers,
                 ),
                 skip_load_errors=True, skip_empty=True,
             )
@@ -944,7 +1053,7 @@ def process_part(
                 "speaker-naming", _with_results(results), device,
                 lambda dev: load_pyannote_embedding_model(hf_token, dev),
                 lambda path, previous, model, dev: apply_enrolled_speaker_names(
-                    path, previous, model, dev,
+                    path, previous, model, dev, allowed_speakers,
                 ),
             )
 
@@ -974,6 +1083,11 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
             f"No context for {session_id} — run hugin-meet-context {session_id} first"
         )
     language = context.language_value
+    allowed_speakers = speaker_allowlist(context)
+    print(
+        "  Speaker candidates from calendar: "
+        + (", ".join(allowed_speakers) if allowed_speakers else "(none)")
+    )
 
     from .pipeline import year_subdir
 
@@ -1022,6 +1136,8 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
                 diarizer_name,
                 "--language",
                 language,
+                "--allowed-speakers",
+                json.dumps(allowed_speakers, ensure_ascii=False),
             ]
             if sys_part is not None:
                 cmd.extend(["--sys", str(sys_part)])

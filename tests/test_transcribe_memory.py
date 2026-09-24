@@ -141,7 +141,7 @@ def test_part_releases_whisper_before_alignment_and_keeps_devices_independent(ru
         stages.append(('diarizer', device))
         return True
     monkeypatch.setattr(t, 'load_diarizer', diarizer)
-    monkeypatch.setattr(t, 'diarize', lambda path, result, *args: result)
+    monkeypatch.setattr(t, 'diarize', lambda path, result, *args, **kwargs: result)
     t.process_part(Path('mic'), Path('sys'), part_index=1, use_part_suffix=False, language='sv')
     assert asr_calls == ['mic', 'sys']
     assert stages == [('align', 'mic', 'cuda'), ('align', 'mic', 'cpu'), ('align', 'sys', 'cpu'), ('diarizer', 'cuda')]

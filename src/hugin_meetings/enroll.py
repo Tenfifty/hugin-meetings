@@ -6,6 +6,14 @@ Usage:
     enroll-speaker.py transcript-20260408-223310.json
     enroll-speaker.py --list
     enroll-speaker.py --remove Alice
+    enroll-speaker.py --always "David Fendrich"   # candidate in every meeting
+
+Names are only ever added here, by a person. Transcription never writes to
+the speaker store. It also only *applies* an enrolled name when that name is
+among the attendees of the session's verified calendar event (see
+``transcribe.speaker_allowlist``), so an enrollment under a name the
+invitation does not list is warned about below: it would be dead weight at
+best and a misattribution at worst.
 """
 
 import argparse
@@ -39,7 +47,7 @@ MIN_WORDS = 4                 # reject backchannels
 MIN_READY_SEGMENTS = 20       # don't use for matching until we have this many
 OUTLIER_THRESHOLD = 0.3       # reject segment if cosine to current centroid < this
 AMBIGUITY_GAP = 0.1           # reject if gap between best and second-best match < this
-MATCH_THRESHOLD = 0.5         # minimum cosine similarity for a match
+MATCH_THRESHOLD = 0.6         # minimum cosine similarity for a match
 
 
 # --- Speaker storage ---
@@ -395,6 +403,8 @@ def do_enrollment(transcript_path: Path, assignments: list[tuple[str, str]]):
         print("No HuggingFace token found. Run: huggingface-cli login", file=sys.stderr)
         sys.exit(1)
 
+    warn_names_not_invited(ts, [name for _, name in assignments])
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Loading embedding model...")
     emb_model = load_embedding_model(hf_token, device)
@@ -484,6 +494,32 @@ def do_enrollment(transcript_path: Path, assignments: list[tuple[str, str]]):
         update_transcript(transcript_path, assignments)
 
 
+def warn_names_not_invited(session_id: str, names: list[str]) -> list[str]:
+    """Print a warning for each name absent from the session's calendar attendees.
+
+    Returns the names warned about. Silent when the session has no context or
+    the event has no attendee list — there is nothing to check against then.
+    """
+    from . import context as meeting_context
+    from .transcribe import attendee_matches_speaker, event_attendee_names
+
+    context = meeting_context.load_context(session_id)
+    candidate = meeting_context.best_candidate(context) if context else None
+    attendees = event_attendee_names(candidate.event) if candidate else []
+    if not attendees:
+        return []
+    missing = [
+        n for n in names
+        if not any(attendee_matches_speaker(a, n) for a in attendees)
+    ]
+    for n in missing:
+        print(
+            f"  WARNING: '{n}' is not among the calendar attendees "
+            f"({', '.join(attendees)}). Enrolled anyway — check that this is the right person."
+        )
+    return missing
+
+
 def update_transcript(transcript_path: Path, assignments: list[tuple[str, str]]):
     """Replace anonymous speaker labels with real names in transcript files."""
     # Build rename map: (channel, SPEAKER_XX) -> name
@@ -551,11 +587,11 @@ def list_speakers():
         status = "ready" if ready else f"need {max(0, MIN_READY_SEGMENTS - total)} more"
         sources = meta.get("sources", [])
         source_str = ", ".join(s["file"] for s in sources[-3:])  # show last 3
-        print(f"  {display:20s}  {total:3d} segments  ({status})  from: {source_str}")
+        always = "  [always a candidate]" if meta.get("always_candidate") else ""
+        print(f"  {display:20s}  {total:3d} segments  ({status})  from: {source_str}{always}")
 
 
-def remove_speaker(name: str):
-    import shutil
+def _resolve_speaker_dir(name: str) -> Path:
     d = speaker_dir(name)
     if not d.exists():
         # Try case-insensitive
@@ -567,8 +603,30 @@ def remove_speaker(name: str):
     if not d.exists():
         print(f"Speaker '{name}' not found.", file=sys.stderr)
         sys.exit(1)
+    return d
+
+
+def remove_speaker(name: str):
+    import shutil
+    d = _resolve_speaker_dir(name)
     shutil.rmtree(d)
     print(f"Removed '{name}'")
+
+
+def set_always_candidate(name: str, value: bool):
+    """Mark a speaker as a match candidate in every meeting, invited or not.
+
+    Meant for the person whose machine records: they are never on their own
+    attendee list in a useful way, and a meeting with no attendee list at all
+    would otherwise have no candidates.
+    """
+    d = _resolve_speaker_dir(name)
+    meta_path = d / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["always_candidate"] = value
+    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    state = "always a candidate" if value else "candidate only when invited"
+    print(f"{meta.get('display_name', name)}: {state}")
 
 
 def main():
@@ -576,12 +634,24 @@ def main():
     parser.add_argument("transcript", nargs="?", help="Transcript JSON file (default: latest)")
     parser.add_argument("--list", action="store_true", help="List enrolled speakers")
     parser.add_argument("--remove", metavar="NAME", help="Remove an enrolled speaker")
+    parser.add_argument(
+        "--always", metavar="NAME",
+        help="Make NAME a match candidate in every meeting, whether invited or not",
+    )
+    parser.add_argument(
+        "--not-always", metavar="NAME",
+        help="Undo --always: NAME is a candidate only when the invitation lists them",
+    )
     args = parser.parse_args()
 
     if args.list:
         list_speakers()
     elif args.remove:
         remove_speaker(args.remove)
+    elif args.always:
+        set_always_candidate(args.always, True)
+    elif args.not_always:
+        set_always_candidate(args.not_always, False)
     else:
         transcript_path = resolve_transcript(args.transcript)
         print(f"Using transcript: {transcript_path.name}")
