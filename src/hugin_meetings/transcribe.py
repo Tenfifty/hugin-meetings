@@ -593,7 +593,20 @@ def diarize(
             f"    NeMo input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
             f"device={device} {_cuda_memory_stats()}", flush=True,
         )
-        annotation = diarizer_model(str(wav_path))
+        try:
+            annotation = diarizer_model(str(wav_path))
+        except ValueError as exc:
+            if "contains silence" not in str(exc):
+                raise
+            # NeMo's VAD found no speech, so what Whisper produced for this
+            # track is a hallucination on noise ("Undertexter från
+            # Amara.org-gemenskapen"). Log the dropped text as evidence.
+            dropped = [seg.get("text", "").strip() for seg in result["segments"]]
+            print(
+                f"    NeMo VAD found no speech in {audio_path.name}; "
+                f"dropping {len(dropped)} ASR segment(s): {dropped}", flush=True,
+            )
+            return {**result, "segments": [], "word_segments": []}
         print(f"    NeMo output speakers={len(annotation.labels())}", flush=True)
         result = assign_word_speakers(_annotation_to_df(annotation), result)
         if speaker_id_model is not None:
