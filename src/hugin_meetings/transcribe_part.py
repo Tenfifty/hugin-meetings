@@ -29,8 +29,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--diarizer",
-        choices=("nemo", "whisperx"),
-        default="nemo",
+        choices=("sortformer", "nemo", "whisperx"),
+        default="sortformer",
         help="Diarization backend",
     )
     return parser.parse_args()

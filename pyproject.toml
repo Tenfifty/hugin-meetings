@@ -26,6 +26,9 @@ transcribe = [
     "numpy>=2.1",
     "pandas>=2.2,<3",
     "pyannote.audio>=4.0,<5",
+    # sortformer.py: KMeans for splitting shared speaker slots, wav reading.
+    "scikit-learn",
+    "soundfile",
     "torch>=2.8,<2.9",
     "torchaudio>=2.8,<2.9",
     "whisperx>=3.8,<3.9",

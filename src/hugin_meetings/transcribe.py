@@ -59,7 +59,13 @@ ALIGN_MODELS = {
     **(load_config().raw.get("meetings", {}).get("transcribe_align_models") or {}),
 }
 
-DEFAULT_DIARIZER = "nemo"
+# Sortformer finds turns; sortformer.py re-decides who is who by voice. It
+# matches MSDD's labelling on all but ~7 % of words at a fifth of the GPU time,
+# and does not OOM on long parts. "nemo" (MSDD) is gone from NeMo 3.
+DEFAULT_DIARIZER = "sortformer"
+DIARIZERS = ("sortformer", "nemo", "whisperx")
+# Backends that take a 16 kHz PCM wav and are followed by the enrolled-name step.
+WAV_DIARIZERS = ("sortformer", "nemo")
 # NeMo's default MSDD inference batch (25) OOMs on a 65 min part; 4 fits with
 # ~1.4 GB spare and diarizes 6.3x faster than the CPU fallback it replaces.
 # Measured identical output to batch 8, so there is no reason to run hotter.
@@ -345,6 +351,15 @@ def _run_model_stage(
         print(f"  Stage {phase}: elapsed_s={time.monotonic() - started:.1f} {_cuda_memory_stats()}", flush=True)
 
 
+def _segments_to_df(segments) -> pd.DataFrame:
+    import pandas as pd
+
+    return pd.DataFrame(
+        [{"start": float(a), "end": float(b), "speaker": label} for a, b, label in segments],
+        columns=["start", "end", "speaker"],
+    )
+
+
 def _annotation_to_df(annotation) -> pd.DataFrame:
     import pandas as pd
 
@@ -433,8 +448,19 @@ def load_pyannote_embedding_model(hf_token: str, device: str):
 
 def load_diarizer(diarizer_name: str, device: str, hf_token: str | None):
     """Load the requested diarization backend."""
+    if diarizer_name == "sortformer":
+        from .sortformer import SortformerDiarizer
+
+        return SortformerDiarizer(device)
+
     if diarizer_name == "nemo":
-        from nemo.collections.asr.models import NeuralDiarizer
+        try:
+            from nemo.collections.asr.models import NeuralDiarizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "MSDD (--diarizer nemo) was removed in NeMo 3; use --diarizer sortformer "
+                "or install nemo_toolkit<3"
+            ) from exc
 
         diarizer = NeuralDiarizer.from_pretrained(
             model_name="diar_msdd_telephonic",
@@ -585,30 +611,37 @@ def diarize(
         print("    Skipping diarization: transcript has no segments")
         return result
 
-    if diarizer_name == "nemo":
+    if diarizer_name in WAV_DIARIZERS:
         from whisperx.diarize import assign_word_speakers
 
         wav_path = _ensure_pcm_wav(audio_path)
         print(
-            f"    NeMo input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
+            f"    {diarizer_name} input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
             f"device={device} {_cuda_memory_stats()}", flush=True,
         )
         try:
-            annotation = diarizer_model(str(wav_path))
+            output = diarizer_model(str(wav_path))
         except ValueError as exc:
+            # MSDD raises this when its VAD finds nothing; Sortformer returns [].
             if "contains silence" not in str(exc):
                 raise
-            # NeMo's VAD found no speech, so what Whisper produced for this
+            output = None
+        if diarizer_name == "nemo":
+            diarization = _annotation_to_df(output) if output is not None else None
+        else:
+            diarization = _segments_to_df(output) if output else None
+        if diarization is None or diarization.empty:
+            # The diarizer heard no speech, so what Whisper produced for this
             # track is a hallucination on noise ("Undertexter från
             # Amara.org-gemenskapen"). Log the dropped text as evidence.
             dropped = [seg.get("text", "").strip() for seg in result["segments"]]
             print(
-                f"    NeMo VAD found no speech in {audio_path.name}; "
+                f"    {diarizer_name} found no speech in {audio_path.name}; "
                 f"dropping {len(dropped)} ASR segment(s): {dropped}", flush=True,
             )
             return {**result, "segments": [], "word_segments": []}
-        print(f"    NeMo output speakers={len(annotation.labels())}", flush=True)
-        result = assign_word_speakers(_annotation_to_df(annotation), result)
+        print(f"    {diarizer_name} output speakers={diarization['speaker'].nunique()}", flush=True)
+        result = assign_word_speakers(diarization, result)
         if speaker_id_model is not None:
             embeddings = build_speaker_centroids_from_result(
                 wav_path, result, speaker_id_model, device
@@ -1061,7 +1094,7 @@ def process_part(
                 skip_load_errors=True, skip_empty=True,
             )
 
-        if do_diarize and diarizer_name == "nemo" and hf_token and SPEAKERS_DIR.exists():
+        if do_diarize and diarizer_name in WAV_DIARIZERS and hf_token and SPEAKERS_DIR.exists():
             results = _run_model_stage(
                 "speaker-naming", _with_results(results), device,
                 lambda dev: load_pyannote_embedding_model(hf_token, dev),
@@ -1075,7 +1108,7 @@ def process_part(
             part_entries, part_index=part_index, use_part_suffix=use_part_suffix,
         )
     finally:
-        if diarizer_name == "nemo":
+        if diarizer_name in WAV_DIARIZERS:
             _cleanup_pcm_wav(mic_part)
             _cleanup_pcm_wav(sys_part)
 
@@ -1199,7 +1232,7 @@ def main():
     parser.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     parser.add_argument(
         "--diarizer",
-        choices=("nemo", "whisperx"),
+        choices=DIARIZERS,
         default=DEFAULT_DIARIZER,
         help=f"Diarization backend (default: {DEFAULT_DIARIZER})",
     )
