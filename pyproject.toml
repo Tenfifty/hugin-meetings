@@ -17,7 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 transcribe = [
     "huggingface-hub",
-    "nemo_toolkit[asr]",
+    # 3.x: Sortformer + TitaNet (sortformer.py). NeMo 3 removed MSDD.
+    "nemo_toolkit[asr]>=3,<4",
     # whisperx>=3.8 requires pyannote.audio>=4 (for the speaker-diarization
     # community-1 pipeline + token= kwarg used by transcribe/enroll) and
     # numpy>=2.1, and bundles its CUDA cuDNN 9 via torch's cu12 wheels. Older

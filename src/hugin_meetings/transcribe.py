@@ -60,16 +60,9 @@ ALIGN_MODELS = {
 }
 
 # Sortformer finds turns; sortformer.py re-decides who is who by voice. It
-# matches MSDD's labelling on all but ~7 % of words at a fifth of the GPU time,
-# and does not OOM on long parts. "nemo" (MSDD) is gone from NeMo 3.
+# replaced NeMo's MSDD, which NeMo 3 removed and which OOMed on long parts.
 DEFAULT_DIARIZER = "sortformer"
-DIARIZERS = ("sortformer", "nemo", "whisperx")
-# Backends that take a 16 kHz PCM wav and are followed by the enrolled-name step.
-WAV_DIARIZERS = ("sortformer", "nemo")
-# NeMo's default MSDD inference batch (25) OOMs on a 65 min part; 4 fits with
-# ~1.4 GB spare and diarizes 6.3x faster than the CPU fallback it replaces.
-# Measured identical output to batch 8, so there is no reason to run hotter.
-NEMO_MSDD_INFER_BATCH_SIZE = 4
+DIARIZERS = ("sortformer", "whisperx")
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
 SPEAKER_MATCH_THRESHOLD = 0.6  # cosine to an enrolled centroid; two enrolled women sit 0.53 apart, so 0.5 did not separate same-sex speakers
@@ -360,22 +353,6 @@ def _segments_to_df(segments) -> pd.DataFrame:
     )
 
 
-def _annotation_to_df(annotation) -> pd.DataFrame:
-    import pandas as pd
-
-    rows = []
-    for segment, track, speaker in annotation.itertracks(yield_label=True):
-        rows.append(
-            {
-                "segment": segment,
-                "label": track,
-                "speaker": speaker,
-                "start": float(segment.start),
-                "end": float(segment.end),
-            }
-        )
-    return pd.DataFrame(rows)
-
 
 def _ensure_pcm_wav(audio_path: Path) -> Path:
     WAV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -409,30 +386,6 @@ def _cleanup_pcm_wav(audio_path: Path | None) -> None:
     wav_path.unlink(missing_ok=True)
 
 
-def _set_nemo_clustering_device(diarizer, device: str) -> None:
-    import torch
-
-    clus = diarizer.clustering_embedding.clus_diar_model
-    clus._speaker_model = clus._speaker_model.to(torch.device(device))
-
-
-def _set_nemo_msdd_batch_size(diarizer, batch_size: int) -> None:
-    """Shrink MSDD's inference batch so long parts fit on an 8 GB card.
-
-    NeMo defaults ``infer_batch_size`` to 25, which OOMs in the MSDD forward
-    pass (``conv_scale_weights`` -> relu) on a 65 min part — the length the
-    recorder rotates at, so every long meeting produces one. Note the OOM is
-    *not* in clustering: that stage handles 12940 segments unchunked without
-    complaint, so ``embeddings_per_chunk`` is the wrong knob here.
-
-    ``transfer_diar_params_to_model_params`` already copied the config value
-    into ``test_ds`` at construction, so set both; ``setup_test_data`` re-reads
-    ``test_ds.batch_size`` at inference time, which is what actually takes
-    effect.
-    """
-    diarizer._cfg.diarizer.msdd_model.parameters.infer_batch_size = batch_size
-    diarizer.msdd_model.cfg.test_ds.batch_size = batch_size
-
 
 def load_pyannote_embedding_model(hf_token: str, device: str):
     """Load pyannote's speaker embedding model for post-hoc speaker naming."""
@@ -452,27 +405,6 @@ def load_diarizer(diarizer_name: str, device: str, hf_token: str | None):
         from .sortformer import SortformerDiarizer
 
         return SortformerDiarizer(device)
-
-    if diarizer_name == "nemo":
-        try:
-            from nemo.collections.asr.models import NeuralDiarizer
-        except ImportError as exc:
-            raise RuntimeError(
-                "MSDD (--diarizer nemo) was removed in NeMo 3; use --diarizer sortformer "
-                "or install nemo_toolkit<3"
-            ) from exc
-
-        diarizer = NeuralDiarizer.from_pretrained(
-            model_name="diar_msdd_telephonic",
-            vad_model_name="vad_multilingual_marblenet",
-            map_location=device,
-            verbose=False,
-        )
-        # NeMo 2.7.2 otherwise leaves clustering on CPU even when loaded on CUDA.
-        if device == "cuda":
-            _set_nemo_clustering_device(diarizer, device)
-            _set_nemo_msdd_batch_size(diarizer, NEMO_MSDD_INFER_BATCH_SIZE)
-        return diarizer
 
     if diarizer_name == "whisperx":
         from whisperx.diarize import DiarizationPipeline
@@ -611,7 +543,7 @@ def diarize(
         print("    Skipping diarization: transcript has no segments")
         return result
 
-    if diarizer_name in WAV_DIARIZERS:
+    if diarizer_name == "sortformer":
         from whisperx.diarize import assign_word_speakers
 
         wav_path = _ensure_pcm_wav(audio_path)
@@ -619,18 +551,8 @@ def diarize(
             f"    {diarizer_name} input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
             f"device={device} {_cuda_memory_stats()}", flush=True,
         )
-        try:
-            output = diarizer_model(str(wav_path))
-        except ValueError as exc:
-            # MSDD raises this when its VAD finds nothing; Sortformer returns [].
-            if "contains silence" not in str(exc):
-                raise
-            output = None
-        if diarizer_name == "nemo":
-            diarization = _annotation_to_df(output) if output is not None else None
-        else:
-            diarization = _segments_to_df(output) if output else None
-        if diarization is None or diarization.empty:
+        segments = diarizer_model(str(wav_path))
+        if not segments:
             # The diarizer heard no speech, so what Whisper produced for this
             # track is a hallucination on noise ("Undertexter från
             # Amara.org-gemenskapen"). Log the dropped text as evidence.
@@ -640,6 +562,7 @@ def diarize(
                 f"dropping {len(dropped)} ASR segment(s): {dropped}", flush=True,
             )
             return {**result, "segments": [], "word_segments": []}
+        diarization = _segments_to_df(segments)
         print(f"    {diarizer_name} output speakers={diarization['speaker'].nunique()}", flush=True)
         result = assign_word_speakers(diarization, result)
         if speaker_id_model is not None:
@@ -1094,7 +1017,7 @@ def process_part(
                 skip_load_errors=True, skip_empty=True,
             )
 
-        if do_diarize and diarizer_name in WAV_DIARIZERS and hf_token and SPEAKERS_DIR.exists():
+        if do_diarize and diarizer_name == "sortformer" and hf_token and SPEAKERS_DIR.exists():
             results = _run_model_stage(
                 "speaker-naming", _with_results(results), device,
                 lambda dev: load_pyannote_embedding_model(hf_token, dev),
@@ -1108,7 +1031,7 @@ def process_part(
             part_entries, part_index=part_index, use_part_suffix=use_part_suffix,
         )
     finally:
-        if diarizer_name in WAV_DIARIZERS:
+        if diarizer_name == "sortformer":
             _cleanup_pcm_wav(mic_part)
             _cleanup_pcm_wav(sys_part)
 

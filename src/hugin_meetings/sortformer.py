@@ -195,7 +195,7 @@ def refine_speakers(
 
 
 class SortformerDiarizer:
-    """Callable like NeMo's MSDD diarizer: wav path in, ``(start, end, label)`` list out."""
+    """Wav path in, ``(start, end, label)`` list out; ``[]`` when there is no speech."""
 
     def __init__(self, device: str):
         from nemo.collections.asr.models import EncDecSpeakerLabelModel, SortformerEncLabelModel
