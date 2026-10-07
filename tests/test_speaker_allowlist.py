@@ -62,6 +62,13 @@ def test_attendee_matching_rules():
     assert m("johannes.ohlin@tenfifty.io", "Johannes Öhlin")
     # a bare first name (email local part) is enough
     assert m("amer", "Amer Mohammed")
+    # fused particles, middle initials and honorifics in email local parts
+    assert m("anna.vonhallen@example.com", "Anna von Hallen")
+    assert m("per.h.berg@example.com", "Per Berg")
+    assert m("dr.erik.lind@example.com", "Erik Lind")
+    assert not m("per.h.andersson@example.com", "Per Berg")
+    assert not m("dr.lind@example.com", "Erik Lind")
+    assert not m("erik.lind.jr@example.com", "Erik Lind")
     # but a full name must match in full
     assert not m("Charlotte Svensson", "Charlotte Eriksson")
     assert not m("Anders Bjurström", "Kristina Bjurström")

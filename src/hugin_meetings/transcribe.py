@@ -669,8 +669,8 @@ def _ready_speaker_metas() -> list[tuple[Path, dict]]:
     return out
 
 
-def name_tokens(text: str) -> set[str]:
-    """Lower-cased, accent-folded word tokens: 'Pär Blixt' -> {'par', 'blixt'}.
+def name_token_list(text: str) -> list[str]:
+    """Lower-cased, accent-folded word tokens in order: 'Pär Blixt' -> ['par', 'blixt'].
 
     Emails are cut at '@' first so 'charlotte.eriksson@x.se' tokenizes to the
     name it stands for. 'ö' folds to 'o', so 'Öhlin' and 'ohlin' agree.
@@ -678,10 +678,16 @@ def name_tokens(text: str) -> set[str]:
     text = text.split("@", 1)[0]
     folded = unicodedata.normalize("NFKD", text)
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
-    tokens = {t for t in "".join(
-        ch if ch.isalnum() else " " for ch in folded.lower()
-    ).split() if t}
-    return tokens
+    return "".join(ch if ch.isalnum() else " " for ch in folded.lower()).split()
+
+
+def name_tokens(text: str) -> set[str]:
+    """``name_token_list`` as a set, for order-free comparison ('Öhlin, Johannes')."""
+    return set(name_token_list(text))
+
+
+# Dropped from an attendee before the run-together comparison below.
+NAME_HONORIFICS = {"dr", "prof", "mr", "mrs", "ms"}
 
 
 def attendee_matches_speaker(attendee: str, speaker_name: str) -> bool:
@@ -690,13 +696,22 @@ def attendee_matches_speaker(attendee: str, speaker_name: str) -> bool:
     Two-plus-token attendees must equal the full name. A single token (a bare
     first name, or an email like 'amer@…') matches if it is one of the
     speaker's name tokens — loose, but the voice still has to match on top.
+
+    Email local parts often fuse or pad a name: 'anna.vonhallen',
+    'per.h.berg', 'dr.erik.lind'. Until 2026-10-07 addresses like these kept
+    three enrolled people out of 17 meetings they were invited to. So a multi-token attendee also
+    matches when, with initials and honorifics dropped, its tokens run together
+    spell the name run together, in order.
     """
     a = name_tokens(attendee)
     s = name_tokens(speaker_name)
     if not a or not s:
         return False
     if len(a) >= 2:
-        return a == s
+        if a == s:
+            return True
+        core = [t for t in name_token_list(attendee) if len(t) > 1 and t not in NAME_HONORIFICS]
+        return len(core) >= 2 and "".join(core) == "".join(name_token_list(speaker_name))
     return a <= s
 
 
