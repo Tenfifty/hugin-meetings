@@ -116,9 +116,11 @@ class AudioTui:
 
         unverified = sum(1 for rec in self.recordings if rec.needs_verification)
         unprocessed = sum(1 for rec in self.recordings if rec.ready_for_pipeline)
+        interrupted = sum(1 for rec in self.recordings if rec.recording_state == "interrupted")
         header = (
             f"Hugin Audio TUI  |  meetings: {len(self.recordings)}  "
             f"to verify: {unverified}  verified, not processed: {unprocessed}"
+            + (f"  INTERRUPTED: {interrupted}" if interrupted else "")
         )
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
@@ -141,11 +143,12 @@ class AudioTui:
             enroll = f" anon:{len(rec.anonymous_speakers)}" if rec.anonymous_speakers else ""
             customer_label = self.customer_label(rec)
             part_label = f"p{rec.raw_part_count}" if rec.raw_part_count else "--"
+            recording = f"[{rec.recording_state}] " if rec.recording_state else ""
             line = (
                 f"{selector} {rec.timestamp}  {part_label:>3}  {rec.short_status}  "
                 f"{rec.pipeline_steps_complete}/{rec.pipeline_total_steps}  "
                 f"{self.language_label(rec):<4}"
-                f"{customer_label[:22].ljust(22)}  {rec.title}{enroll}"
+                f"{customer_label[:22].ljust(22)}  {recording}{rec.title}{enroll}"
             )
             attr = curses.color_pair(1) | curses.A_BOLD if actual_index == self.selected else curses.A_NORMAL
             stdscr.addstr(y, 0, line[: w - 1], attr)
@@ -166,6 +169,11 @@ class AudioTui:
 
     def pending_commands(self, rec: audio_pipeline.MeetingStatus) -> list[tuple[str, list[str]]]:
         commands: list[tuple[str, list[str]]] = []
+        if rec.in_progress_parts:
+            raise RuntimeError(
+                f"{rec.timestamp} is {rec.recording_state}: "
+                f"{len(rec.in_progress_parts)} part(s) still in {audio_pipeline.RECORDING_DIR}"
+            )
         if not rec.is_verified:
             raise RuntimeError(
                 f"{rec.timestamp} is not verified — check language and customer first (v)"
@@ -405,10 +413,19 @@ class AudioTui:
             2,
             0,
             (
-                f"Parts: mic={len(rec.mic_parts)}, sys={len(rec.sys_parts)}  "
-                if rec.raw_part_count
-                else ""
+                (
+                    f"Parts: mic={len(rec.mic_parts)}, sys={len(rec.sys_parts)}  "
+                    if rec.raw_part_count
+                    else ""
+                )
+                + (
+                    f"{rec.recording_state.upper()}: {len(rec.in_progress_parts)} part(s) in "
+                    f"{audio_pipeline.RECORDING_DIR}"
+                    if rec.in_progress_parts
+                    else ""
+                )
             )[: w - 1],
+            curses.color_pair(4) if rec.recording_state == "interrupted" else curses.A_NORMAL,
         )
         stdscr.addstr(
             3,

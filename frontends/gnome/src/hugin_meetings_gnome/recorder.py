@@ -28,6 +28,7 @@ AUDIO_TUI_BIN = resolve_sibling_bin("hugin-meet-tui")
 USER_SHELL = os.environ.get("SHELL") or "/usr/bin/zsh"
 
 AUDIO_DIR = _cfg.raw_audio_dir
+RECORDING_DIR = _cfg.recording_dir
 STATE_DIR = _cfg.recorder_state_dir
 # Optional: path to a daily journal file. Recorder reads it to pre-populate
 # today's scheduled meetings in the menu. Set journal_path in hugin.yaml
@@ -66,7 +67,7 @@ class AudioRecorder:
         AUDIO_DIR.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.session = recording.RecordingSession(audio_dir=AUDIO_DIR)
+        self.session = recording.RecordingSession(audio_dir=AUDIO_DIR, recording_dir=RECORDING_DIR)
         self.pending_count = 0
         self.pending_refresh_at = 0.0
         self.today = date.today()

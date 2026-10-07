@@ -53,6 +53,15 @@ class VerificationGateTests(unittest.TestCase):
         self.assertEqual(rec.pipeline_steps_complete, 1)
         self.assertEqual(rec.pipeline_total_steps, 5)
 
+    def test_a_session_with_parts_not_yet_archived_is_not_processable(self) -> None:
+        context = MeetingContext(session_id="20260824-140104", verified=True)
+        rec = status(
+            context=context,
+            in_progress_parts=(Path("/state/recording/mic-20260824-140104-p02.opus"),),
+            recording_state="recording",
+        )
+        self.assertFalse(rec.ready_for_pipeline)
+
 
 class LegacyVerificationTests(unittest.TestCase):
     """Meetings from before the context stage were verified in the old place."""

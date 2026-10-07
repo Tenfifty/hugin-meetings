@@ -34,6 +34,7 @@ from .pipeline import (
     is_backchannel,
     parse_raw_audio_part,
     raw_audio_session,
+    scan_in_progress_parts,
     scan_raw_audio_sessions,
     transcript_json_path,
 )
@@ -1043,6 +1044,13 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
     session = raw_audio_session(session_id)
     if session is None or not session.mic_parts:
         raise RuntimeError(f"No mic recording parts found for session {session_id}")
+    # Transcribing the archived parts alone would cache a transcript of half a meeting.
+    in_progress = scan_in_progress_parts().get(session_id)
+    if in_progress:
+        raise RuntimeError(
+            f"{session_id} has {len(in_progress)} part(s) still in {in_progress[0].parent} "
+            "(recording, or interrupted); not transcribing until they are archived"
+        )
 
     # The context is the contract: it decides the language, and a person has
     # normally confirmed it. Transcribing without one means guessing again.
@@ -1141,10 +1149,13 @@ def find_unprocessed() -> list[str]:
         if not p.name.endswith(".customer.json")
     }
     sessions = scan_raw_audio_sessions()
+    in_progress = scan_in_progress_parts()
+    for session_id in sorted(set(in_progress) - processed):
+        print(f"Skipping {session_id}: part(s) still in {in_progress[session_id][0].parent}", file=sys.stderr)
     return [
         session_id
         for session_id in sorted(sessions)
-        if session_id not in processed and sessions[session_id].mic_parts
+        if session_id not in processed and sessions[session_id].mic_parts and session_id not in in_progress
     ]
 
 

@@ -59,7 +59,8 @@ class MeetingsConfig(SharedConfig):
     transcripts_dir: Path = field(default_factory=lambda: Path.home() / "hugin_meetings" / "transcripts")
     summaries_dir: Path = field(default_factory=lambda: Path.home() / "hugin_meetings" / "summaries")
 
-    # State (caches, raw audio, models, speaker embeddings)
+    # State (caches, models, speaker embeddings, recordings in progress).
+    # Finished raw audio is archive, under archive_root (see raw_audio_dir).
     state_dir: Path = field(default_factory=lambda: Path.home() / ".hugin_audio")
 
     # Transcription
@@ -93,7 +94,13 @@ class MeetingsConfig(SharedConfig):
 
     @property
     def raw_audio_dir(self) -> Path:
-        return self.state_dir / "raw"
+        """Finished recordings: write-once archive (CONVENTIONS.md, "The archive root")."""
+        return self.archive_dir("hugin-meetings") / "raw"
+
+    @property
+    def recording_dir(self) -> Path:
+        """Parts still being recorded, or left behind by a recorder that died."""
+        return self.state_dir / "recording"
 
     @property
     def wav_cache_dir(self) -> Path:

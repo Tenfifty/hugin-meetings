@@ -90,7 +90,7 @@ the engine only requires that the context exists.
 
 ### Key modules
 
-- **`config.py`** — `MeetingsConfig` subclasses `hugin.SharedConfig`. Loading goes through `hugin.config.load_tool("meetings", MeetingsConfig.from_merged)`, which reads `~/.config/hugin/hugin.yaml` + `meetings.yaml` and deep-merges. `HUGIN_CONFIG_DIR` overrides the dir. `load_config()` is `lru_cache(maxsize=1)`. `MeetingsConfig` exposes `state_dir` and derived subdirs (`raw_audio_dir`, `wav_cache_dir`, `speakers_dir`, `models_dir`, `transcript_json_dir`, `recorder_state_dir`). The `LLMConfig`, the codex/claude/agy runner (`hugin.llm.run_prompt`), and the prompt resolver (`hugin.prompts.resolve_prompt`, which auto-picks `<base>_<lang>.md`) all live in the shared library.
+- **`config.py`** — `MeetingsConfig` subclasses `hugin.SharedConfig`. Loading goes through `hugin.config.load_tool("meetings", MeetingsConfig.from_merged)`, which reads `~/.config/hugin/hugin.yaml` + `meetings.yaml` and deep-merges. `HUGIN_CONFIG_DIR` overrides the dir. `load_config()` is `lru_cache(maxsize=1)`. `MeetingsConfig` exposes `state_dir` and derived subdirs (`recording_dir`, `wav_cache_dir`, `speakers_dir`, `models_dir`, `transcript_json_dir`, `recorder_state_dir`), plus `raw_audio_dir`, which is archive: `archive_dir("hugin-meetings") / "raw"`, outside `state_dir`. The `LLMConfig`, the codex/claude/agy runner (`hugin.llm.run_prompt`), and the prompt resolver (`hugin.prompts.resolve_prompt`, which auto-picks `<base>_<lang>.md`) all live in the shared library.
 - **`pipeline.py`** — central metadata/filename conventions and shared helpers. Most cross-module logic lives here: session scanning (`scan_raw_audio_sessions`, `scan_recordings`), filename parsing, calendar metadata markers, customer notes and the matcher prompt. When adding a new pipeline stage, read this first. `MeetingStatus` counts five steps — verify, transcribe, calendar, summarize, link — and `ready_for_pipeline` is false until a person has verified.
 - **`context.py`** — the first stage. `build_context()` guesses, `verify()` is the single write point for a person's decision (it also materializes the customer note and writes `.customer.json`), `record_applied()` notes what a stage actually used so a later change reads as drift. Imports `pipeline`, so `pipeline` may only import it inside functions.
 - **`langid.py`** — VAD-filtered language identification. Samples three 30s windows at 25/50/75% of the *speech* of each channel's largest part and votes. Never samples the opening: meetings routinely start in the local language while waiting for a guest who switches the room to English. Only the sampled regions are decoded, and the probes run as threads against one shared `base` CPU model.
@@ -105,6 +105,7 @@ the engine only requires that the context exists.
 
 - Per-session files live under a `YYYY/` subdir of their base dir, derived from the session timestamp by `pipeline.year_subdir()`. Scans use `rglob`; writers must go through the path helpers.
 - Raw audio: `cfg.raw_audio_dir/YYYY/{mic|sys}-{YYYYMMDD-HHMMSS}-p{NN}.opus`, built by `recording.raw_audio_part_path`. Parsed by `RAW_AUDIO_RE`. Session ID is the timestamp.
+- Raw audio is a write-once archive (`hugin/CONVENTIONS.md`, "The archive root"). A part is recorded flat into `cfg.recording_dir` (`recording.recording_part_path`) and moved into the archive by `RecordingTrack.stop_segment` once ffmpeg has exited, via `recording.archive_part`, which refuses to replace an existing file. Every reader goes through `scan_raw_audio_sessions` and so sees finished parts only. Parts left in `recording_dir` are shown (`MeetingStatus.in_progress_parts`, `.recording_state`: `recording` while the session's `.lock` is flock-held by a recorder, else `interrupted`) and never read, moved or deleted by the code; a session with any of them is not `ready_for_pipeline` and `transcribe` refuses it.
 - Transcripts: `transcripts_dir/YYYY/transcript-{ts}.md`, JSON cache at `cfg.transcript_json_dir/YYYY/transcript-{ts}.json` (`pipeline.transcript_json_path`). The JSON is a bare list of segment dicts — several modules read it positionally, so it has no metadata wrapper.
 - Summaries: `summaries_dir/YYYY/summary-{ts}.md`.
 - Customer/project match state: `cfg.transcript_json_dir/YYYY/transcript-{ts}.customer.json` (`pipeline.customer_state_path`).
@@ -128,11 +129,12 @@ A frontend's job is narrow: **record, and show state**. It does not run the
 pipeline — it hands off to the TUI, which drives transcription/summarization.
 `frontends/gnome/` is the reference implementation of exactly this surface.
 
-1. Record via `hugin_meetings.recording` — `RecordingSession(audio_dir=cfg.raw_audio_dir)`
-   with `start()` / `stop()` / `rotate()`. It builds the `ffmpeg` command and
-   writes parts to the right path (`recording.raw_audio_part_path`, which
-   includes the `YYYY/` subdir). Don't reimplement the ffmpeg invocation or the
-   filename layout in the frontend.
+1. Record via `hugin_meetings.recording` — `RecordingSession(audio_dir=cfg.raw_audio_dir, recording_dir=cfg.recording_dir)`
+   with `start()` / `stop()` / `rotate()`. It builds the `ffmpeg` command,
+   writes each part into `recording_dir` and moves it to its archive path
+   (`recording.raw_audio_part_path`, which includes the `YYYY/` subdir) when
+   the part is finished. Don't reimplement the ffmpeg invocation, the filename
+   layout or the move in the frontend.
 2. Resolve input devices via `hugin_meetings.audio_routes`
    (`get_default_audio_routes()`), not by parsing PipeWire yourself.
 3. Read pipeline state via `hugin_meetings.pipeline.scan_recordings()` →

@@ -9,7 +9,9 @@ meetings:
   transcripts_dir: ~/Documents/notes/meetings/transcripts
   summaries_dir:   ~/Documents/notes/meetings/summaries
 
-  # Cache / state (raw audio, models, speaker embeddings). Safe to wipe.
+  # State: models, caches, speaker embeddings, recordings in progress.
+  # Safe to wipe except speakers/ (enrolled profiles). Finished raw audio is
+  # archive, in <archive_root>/hugin-meetings/raw (archive_root in hugin.yaml).
   state_dir: ~/.hugin_audio
 
   # Whisper

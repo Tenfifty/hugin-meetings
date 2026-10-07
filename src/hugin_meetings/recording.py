@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import subprocess
 import tempfile
@@ -13,6 +14,7 @@ from pathlib import Path
 from .config import load_config
 
 RAW_AUDIO_DIR = load_config().raw_audio_dir
+RECORDING_DIR = load_config().recording_dir
 DEFAULT_RECORDER_LOG_PATH = Path(tempfile.gettempdir()) / "hugin-audio-recorder.log"
 DEFAULT_SEGMENT_MINUTES = 65
 
@@ -25,6 +27,59 @@ def raw_audio_part_path(audio_dir: Path, prefix: str, session_id: str, part: int
     from .pipeline import year_subdir
 
     return audio_dir / year_subdir(session_id) / f"{prefix}-{session_id}-p{part:02d}.opus"
+
+
+def recording_part_path(recording_dir: Path, prefix: str, session_id: str, part: int) -> Path:
+    """Where a part is written while it is being recorded. Flat, same name as in the archive."""
+    return recording_dir / f"{prefix}-{session_id}-p{part:02d}.opus"
+
+
+def archive_part(path: Path, audio_dir: Path) -> Path:
+    """Move a finished part from the recording dir to its place in the archive.
+
+    One rename on the same filesystem, so the part appears under its final
+    name whole or not at all. An archived part is never replaced
+    (CONVENTIONS.md, "The archive root").
+    """
+    from .pipeline import year_subdir
+
+    target = audio_dir / year_subdir(path.name) / path.name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        raise FileExistsError(f"Archived part already exists, not replacing it: {target}")
+    os.rename(path, target)
+    return target
+
+
+def session_lock_path(recording_dir: Path, session_id: str) -> Path:
+    return recording_dir / f"{session_id}.lock"
+
+
+def session_is_recording(recording_dir: Path, session_id: str) -> bool:
+    """True while a recorder holds the session's lock.
+
+    The kernel drops the lock when the recorder dies, so a session cut off by
+    a crash or a power loss reads as not recording, whatever its files say.
+    The parts' mtimes cannot tell: ffmpeg may not flush for minutes.
+    """
+    import fcntl
+
+    try:
+        fd = os.open(session_lock_path(recording_dir, session_id), os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    finally:
+        os.close(fd)
+    return False
+
+
+def leftover_parts(recording_dir: Path) -> list[Path]:
+    """Parts in the recording dir. Before a session starts, each is from one that was interrupted."""
+    return sorted(recording_dir.glob("*.opus")) if recording_dir.exists() else []
 
 
 def start_context_guess(session_id: str, audio_dir: Path = RAW_AUDIO_DIR):
@@ -114,6 +169,7 @@ class RecordingTrack:
         source: str,
         *,
         audio_dir: Path = RAW_AUDIO_DIR,
+        recording_dir: Path = RECORDING_DIR,
         log_path: Path = DEFAULT_RECORDER_LOG_PATH,
         input_format: str = "pulse",
         ffmpeg_bin: str = "ffmpeg",
@@ -121,6 +177,7 @@ class RecordingTrack:
         self.prefix = prefix
         self.source = source
         self.audio_dir = audio_dir
+        self.recording_dir = recording_dir
         self.log_path = log_path
         self.input_format = input_format
         self.ffmpeg_bin = ffmpeg_bin
@@ -137,8 +194,10 @@ class RecordingTrack:
         if not self.session_id:
             raise RuntimeError(f"No session id assigned for {self.prefix} recording")
 
-        self.current_file = raw_audio_part_path(
-            self.audio_dir, self.prefix, self.session_id, self.next_part
+        # Written in the recording dir and moved into the archive by
+        # stop_segment, once ffmpeg has finished the file.
+        self.current_file = recording_part_path(
+            self.recording_dir, self.prefix, self.session_id, self.next_part
         )
         self.current_file.parent.mkdir(parents=True, exist_ok=True)
         command = build_ffmpeg_recording_command(
@@ -188,8 +247,26 @@ class RecordingTrack:
                 self.process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.process.kill()
+                self.process.wait()
         self.process = None
         self._close_log_file()
+        self._archive_current_file()
+
+    def _archive_current_file(self) -> None:
+        """The part just stopped is final: nothing writes to it again."""
+        path = self.current_file
+        if path is None or not path.exists():
+            return
+        try:
+            archived = archive_part(path, self.audio_dir)
+        except OSError:
+            # Raising here would stop a rotation from starting the next part,
+            # and the recording with it. The part stays in the recording dir,
+            # where the TUI lists it as interrupted.
+            logging.exception("Could not move finished part %s into the archive", path)
+            return
+        logging.info("Archived %s", archived)
+        self.current_file = archived
 
     def rotate_segment(self) -> bool:
         self.stop_segment()
@@ -224,10 +301,12 @@ class RecordingSession:
     dependencies.
     """
 
-    def __init__(self, *, audio_dir: Path = RAW_AUDIO_DIR):
-        self.mic = RecordingTrack("mic", "", audio_dir=audio_dir)
-        self.system = RecordingTrack("sys", "", audio_dir=audio_dir)
+    def __init__(self, *, audio_dir: Path = RAW_AUDIO_DIR, recording_dir: Path = RECORDING_DIR):
+        self.mic = RecordingTrack("mic", "", audio_dir=audio_dir, recording_dir=recording_dir)
+        self.system = RecordingTrack("sys", "", audio_dir=audio_dir, recording_dir=recording_dir)
         self.tracks = (self.mic, self.system)
+        self.recording_dir = recording_dir
+        self._lock_fd: int | None = None
 
     @property
     def recording(self) -> bool:
@@ -249,8 +328,18 @@ class RecordingSession:
         return datetime.fromtimestamp(self.mic.start_time)
 
     def start(self, mic_source: str, system_source: str) -> None:
+        leftovers = leftover_parts(self.recording_dir)
+        if leftovers:
+            # Not moved or deleted: whether a part cut off by a crash belongs
+            # in the archive is for a person to decide.
+            logging.warning(
+                "Interrupted recording parts in %s, left for you to archive or delete: %s",
+                self.recording_dir,
+                ", ".join(path.name for path in leftovers),
+            )
         session_id = new_session_id()
         start_time = time.time()
+        self._hold_session_lock(session_id)
         try:
             for track, source in zip(self.tracks, (mic_source, system_source)):
                 track.source = source
@@ -269,8 +358,26 @@ class RecordingSession:
             track.stop_segment()
             track.recording = False
             track.reset_session()
+        self._release_session_lock(session_id)
         if session_id:
             start_context_guess(session_id, self.mic.audio_dir)
+
+    def _hold_session_lock(self, session_id: str) -> None:
+        """Mark the session as being recorded, for as long as this process lives."""
+        import fcntl
+
+        self.recording_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(session_lock_path(self.recording_dir, session_id), os.O_WRONLY | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self._lock_fd = fd
+
+    def _release_session_lock(self, session_id: str | None) -> None:
+        if self._lock_fd is None:
+            return
+        if session_id:
+            session_lock_path(self.recording_dir, session_id).unlink(missing_ok=True)
+        os.close(self._lock_fd)
+        self._lock_fd = None
 
     def rotate(self, mic_source: str | None = None, system_source: str | None = None) -> None:
         """Roll over to the next part, keeping the session id.

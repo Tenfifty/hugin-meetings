@@ -22,8 +22,12 @@ from .config import load_config
 TRANSCRIPT_DIR = load_config().transcripts_dir
 SUMMARY_DIR = load_config().summaries_dir
 
-# State / cache directories
+# Finished raw audio: the write-once archive. Everything reads audio from here.
 RAW_AUDIO_DIR = load_config().raw_audio_dir
+# Parts still being recorded, or left by a recorder that died. Only shown, never read.
+RECORDING_DIR = load_config().recording_dir
+
+# State / cache directories
 STATE_AUDIO_DIR = load_config().state_dir
 WAV_CACHE_DIR = load_config().wav_cache_dir
 TRANSCRIPT_JSON_DIR = load_config().transcript_json_dir
@@ -187,6 +191,10 @@ class MeetingStatus:
     customer_state: CustomerState | None
     anonymous_speakers: list[str]
     context: Any | None = None
+    # Parts of this session still in the recording dir, and whether they are
+    # being written ("recording") or were left behind ("interrupted").
+    in_progress_parts: tuple[Path, ...] = ()
+    recording_state: str = ""
 
     @property
     def has_transcript(self) -> bool:
@@ -269,8 +277,9 @@ class MeetingStatus:
 
     @property
     def ready_for_pipeline(self) -> bool:
-        """Nothing expensive runs on a session a person has not confirmed."""
-        return self.is_verified and self.needs_pipeline
+        """Nothing expensive runs on a session a person has not confirmed,
+        or on one whose parts are not all in the archive yet."""
+        return self.is_verified and self.needs_pipeline and not self.in_progress_parts
 
     @property
     def needs_enrollment(self) -> bool:
@@ -412,6 +421,32 @@ def scan_raw_audio_sessions() -> dict[str, RawAudioSession]:
 
 def raw_audio_session(session_id: str) -> RawAudioSession | None:
     return scan_raw_audio_sessions().get(session_id)
+
+
+def scan_in_progress_parts() -> dict[str, list[Path]]:
+    """Parts in the recording dir by session. Not finished, so not for reading."""
+    sessions: dict[str, list[Path]] = {}
+    if not RECORDING_DIR.exists():
+        return sessions
+    for path in sorted(RECORDING_DIR.glob("*.opus")):
+        part = parse_raw_audio_part(path)
+        if part is not None:
+            sessions.setdefault(part.session_id, []).append(path)
+    return sessions
+
+
+def recording_state(session_id: str, parts: list[Path]) -> str:
+    """'recording' while a recorder holds the session, else 'interrupted'.
+
+    A recorder that stops normally moves every part into the archive, so a
+    part left here by a session nobody holds was cut off: a crash, a power
+    loss, or a failed move. It is left for a person to archive or delete.
+    """
+    from .recording import session_is_recording
+
+    if not parts:
+        return ""
+    return "recording" if session_is_recording(RECORDING_DIR, session_id) else "interrupted"
 
 
 def _raw_part_sort_key(path: Path) -> int:
@@ -688,7 +723,8 @@ def scan_recordings() -> list[MeetingStatus]:
     from . import context as meeting_context
 
     raw_sessions = scan_raw_audio_sessions()
-    timestamps: set[str] = set(raw_sessions)
+    in_progress = scan_in_progress_parts()
+    timestamps: set[str] = set(raw_sessions) | set(in_progress)
 
     for pattern, prefix in (
         (TRANSCRIPT_DIR.rglob("transcript-*.md"), "transcript-"),
@@ -729,6 +765,8 @@ def scan_recordings() -> list[MeetingStatus]:
                 customer_state=load_customer_state(ts, summary_md if summary_md.exists() else None),
                 anonymous_speakers=load_anonymous_speakers(transcript_json if transcript_json.exists() else None),
                 context=meeting_context.load_context(ts),
+                in_progress_parts=tuple(in_progress.get(ts, ())),
+                recording_state=recording_state(ts, in_progress.get(ts, [])),
             )
         )
     return meetings

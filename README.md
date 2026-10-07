@@ -153,14 +153,41 @@ meetings-specific bits.
 Override the config dir with `HUGIN_CONFIG_DIR=/path`.
 
 Transcripts and summaries are written to `meetings.transcripts_dir` and
-`meetings.summaries_dir`, usually inside your vault. Runtime state is kept under
-`meetings.state_dir` (default: `~/.hugin_audio`), including raw Opus audio in
-`raw/`, cached WAV files, transcript JSON, speaker embeddings, and downloaded
-models. These files are kept so recordings can be rescanned, reprocessed, or
-used for later speaker enrollment. To purge a single meeting entry from the TUI,
-select it and press `d`; this deletes the raw audio, transcript, summary, cached
-WAVs, and the context and customer-state JSON for that meeting, while leaving
-project/customer notes untouched.
+`meetings.summaries_dir`, usually inside your vault.
+
+Finished raw Opus audio is archive in the sense of `hugin/CONVENTIONS.md`
+("The archive root"): a recording cannot be made again. It goes to
+`<archive_root>/hugin-meetings/raw/YYYY/` (default
+`~/.archive/hugin-meetings/raw/`; `archive_root` is set in `hugin.yaml`), and
+every stage reads audio from there. A part is recorded into
+`<state_dir>/recording/` and moved into the archive, by a rename on the same
+filesystem, as soon as ffmpeg has finished it: when the recording stops, and at
+every rotation to a new part (65 minutes, or an audio device change). An
+archived part is never replaced. While recording, the recorder holds
+`<state_dir>/recording/<session>.lock`.
+
+A part that stays in `recording/` while no recorder holds its session was cut
+off by a crash, a power loss or a failed move. Nothing moves or deletes it.
+The TUI marks the session `[interrupted]` and counts it in the header, the
+recorder logs a warning each time a new recording starts, and transcription
+refuses the session until its parts are in the archive. Move them there by hand
+(`mv ~/.hugin_audio/recording/*-<session>-p*.opus ~/.archive/hugin-meetings/raw/YYYY/`)
+or delete them, then remove the session's `.lock` file if one is left. A
+session that is still being recorded shows as `[recording]` and cannot be
+processed either.
+
+Everything else is state under `meetings.state_dir` (default:
+`~/.hugin_audio`): cached WAV files, transcript JSON, speaker embeddings, and
+downloaded models. The enrolled speakers in `speakers/` change over time, so
+they are not archive, but they are expensive to rebuild: of `state_dir`, only
+they are not safe to wipe.
+
+To purge a single meeting entry from the TUI, select it and press `d`; this
+deletes the archived raw audio, transcript, summary, cached WAVs, and the
+context and customer-state JSON for that meeting, while leaving
+project/customer notes untouched. Copies of the raw audio that a backup has
+already taken survive the purge; the backup has to be pruned separately to get
+rid of them. Parts still in `recording/` are not touched by `d`.
 
 The summary and project/customer matcher prompts are ordinary Markdown
 templates under `src/hugin_meetings/prompts/`. Set
@@ -249,8 +276,10 @@ the Gtk layer; the core engine (`hugin_meetings.*`) stays the same.
 
 Key integration points a frontend needs:
 
-- Use `hugin_meetings.recording` to write `{mic|sys}-{session_id}-p{NN}.opus`
-  into `cfg.raw_audio_dir`
+- Use `hugin_meetings.recording` to write `{mic|sys}-{session_id}-p{NN}.opus`:
+  `RecordingSession(audio_dir=cfg.raw_audio_dir, recording_dir=cfg.recording_dir)`
+  records each part into `cfg.recording_dir` and moves it into the archive
+  (`cfg.raw_audio_dir/YYYY/`) once it is finished
 - Use `hugin_meetings.audio_routes` on Linux/PipeWire to discover mic/system
   audio routes, or provide an OS-specific route provider
 - Use `hugin_meetings.schedule` for journal meeting parsing and reminder state
