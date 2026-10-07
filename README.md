@@ -177,10 +177,38 @@ session that is still being recorded shows as `[recording]` and cannot be
 processed either.
 
 Everything else is state under `meetings.state_dir` (default:
-`~/.hugin_audio`): cached WAV files, transcript JSON, speaker embeddings, and
-downloaded models. The enrolled speakers in `speakers/` change over time, so
-they are not archive, but they are expensive to rebuild: of `state_dir`, only
-they are not safe to wipe.
+`~/.hugin_audio`): cached WAV files, transcript JSON, speaker profiles, and
+downloaded models. All of it is safe to wipe; see *Enrolled speakers* for how
+`speakers/` comes back.
+
+### Enrolled speakers
+
+An enrollment is recorded as an event, a small JSON file written once into
+`<archive_root>/hugin-meetings/enrollments/` and never edited:
+`<UTC timestamp>-<slug>.json`, holding the person's name, the session, the
+channel, and the time spans of the segments that were accepted for them (in
+seconds on the session timeline, after the duration, word-count and outlier
+filters). The diarization label it came from is kept for information only.
+Corrections are new events too: `hugin-meet-enroll --remove NAME` forgets a
+person, `--remove-session NAME SESSION [--channel mic|sys] [--span START-END]`
+drops their segments from one session (or those overlapping a span), and
+`--always` / `--not-always` set whether they are a candidate in every meeting.
+A correction that would change nothing is refused, since it could never be
+taken back.
+
+`<state_dir>/speakers/` is a cache folded from those events: every person's
+segments, embedded with the current model, averaged into `centroid.npy`. It
+records the embedding model and a fingerprint of the event set in
+`cache.json`; `hugin-meet-enroll` updates it after each event it writes, and
+transcription updates it first if the events or the model changed. Wiping it
+is safe. `hugin-meet-enroll --rebuild` re-embeds everything from the archived
+audio. Every session an event refers to must still be in the archive: if one
+was deleted (`d` in the TUI), the update stops and names the person, and a
+`--remove-session` for that session is the fix.
+
+Profiles written before the events existed have no time spans and cannot be
+rebuilt. Until they are migrated, `hugin-meet-enroll` refuses to write events
+over them and transcription uses them as they are.
 
 To purge a single meeting entry from the TUI, select it and press `d`; this
 deletes the archived raw audio, transcript, summary, cached WAVs, and the
@@ -227,7 +255,7 @@ After activating the venv or installing with `python -m pip install -e .`:
 | `hugin-meet-match-calendar [transcript]` | Attach calendar metadata (`--rematch` to query Google again) |
 | `hugin-meet-link [session-id] [--all]` | Publish a summary into its verified customer note |
 | `hugin-meet-slack-post [summary] [--channel #name]` | Post summary to Slack |
-| `hugin-meet-enroll` | Interactively enroll a new speaker |
+| `hugin-meet-enroll` | Interactively enroll a new speaker (`--list`, `--remove`, `--remove-session`, `--always`, `--rebuild`) |
 | `hugin-meet-tui` | Interactive curses TUI — drives the whole pipeline |
 
 Calendar matching searches calendars you own by default, which keeps shared or
@@ -303,6 +331,7 @@ src/hugin_meetings/
   transcribe_part.py      Per-part worker (spawned as subprocess)
   summarize.py            LLM summarization
   enroll.py               Speaker enrollment
+  speakers.py             Enrollment events (archive) and the speaker cache folded from them
   calendar_match.py       Google Calendar matching
   link.py                 Last stage: publishes a summary into its customer note
   tui.py                  Interactive TUI

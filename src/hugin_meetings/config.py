@@ -107,7 +107,13 @@ class MeetingsConfig(SharedConfig):
         return self.state_dir / "cache" / "wav"
 
     @property
+    def enrollments_dir(self) -> Path:
+        """Speaker enrollment events: write-once archive, the truth behind ``speakers_dir``."""
+        return self.archive_dir("hugin-meetings") / "enrollments"
+
+    @property
     def speakers_dir(self) -> Path:
+        """Enrolled speaker profiles: a cache folded from ``enrollments_dir``, safe to wipe."""
         return self.state_dir / "speakers"
 
     @property

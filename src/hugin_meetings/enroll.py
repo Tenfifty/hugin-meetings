@@ -2,16 +2,20 @@
 """Enroll speaker voices for recognition from diarized transcripts.
 
 Usage:
-    enroll-speaker.py                               # interactive, uses latest transcript
-    enroll-speaker.py transcript-20260408-223310.json
-    enroll-speaker.py --list
-    enroll-speaker.py --remove Alice
-    enroll-speaker.py --always "David Fendrich"   # candidate in every meeting
+    hugin-meet-enroll                               # interactive, uses latest transcript
+    hugin-meet-enroll transcript-20260408-223310.json
+    hugin-meet-enroll --list
+    hugin-meet-enroll --remove Alice                # forget a person entirely
+    hugin-meet-enroll --remove-session Alice 20260408-223310 [--channel sys] [--span 120-185]
+    hugin-meet-enroll --always "David Fendrich"     # candidate in every meeting
+    hugin-meet-enroll --rebuild                     # re-embed the whole cache
 
-Names are only ever added here, by a person. Transcription never writes to
-the speaker store. It also only *applies* an enrolled name when that name is
-among the attendees of the session's verified calendar event (see
-``transcribe.speaker_allowlist``), so an enrollment under a name the
+Names are only ever added here, by a person. Each enrollment or correction is
+an event written once into the archive (``speakers.py``); ``speakers/`` is a
+cache folded from them, and every command here brings it up to date after
+writing. Transcription never writes events. It also only *applies* an enrolled
+name when that name is among the attendees of the session's verified calendar
+event (see ``transcribe.speaker_allowlist``), so an enrollment under a name the
 invitation does not list is warned about below: it would be dead weight at
 best and a misattribution at worst.
 """
@@ -19,24 +23,28 @@ best and a misattribution at worst.
 import argparse
 import curses
 import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
-from .cli_utils import get_hf_token
+from . import speakers
+from .speakers import (
+    MIN_READY_SEGMENTS,
+    EnrollmentError,
+    PyannoteEmbedder,
+    cosine_similarities,
+    slugify,
+)
 from .pipeline import (
     TRANSCRIPT_JSON_DIR,
     is_backchannel,
-    raw_audio_session,
     transcript_json_for_markdown,
 )
 from .config import load_config
 
-AUDIO_DIR = load_config().raw_audio_dir
 TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
+ENROLLMENTS_DIR = load_config().enrollments_dir
 
 # Segment filtering
 MIN_SEGMENT_DURATION = 2.5    # seconds
@@ -44,151 +52,41 @@ MAX_SEGMENT_DURATION = 30.0   # seconds (very long = likely misattributed)
 MIN_WORDS = 4                 # reject backchannels
 
 # Embedding quality
-MIN_READY_SEGMENTS = 20       # don't use for matching until we have this many
 OUTLIER_THRESHOLD = 0.3       # reject segment if cosine to current centroid < this
-AMBIGUITY_GAP = 0.1           # reject if gap between best and second-best match < this
-MATCH_THRESHOLD = 0.6         # minimum cosine similarity for a match
-
-
-# --- Speaker storage ---
-
-def speaker_dir(name: str) -> Path:
-    return SPEAKERS_DIR / name.lower().replace(" ", "_")
-
-
-def load_speaker_meta(name: str) -> dict | None:
-    meta_path = speaker_dir(name) / "meta.json"
-    if meta_path.exists():
-        return json.loads(meta_path.read_text())
-    return None
-
-
-def save_speaker(name: str, meta: dict, embeddings: np.ndarray, centroid: np.ndarray):
-    d = speaker_dir(name)
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
-    np.save(d / "embeddings.npy", embeddings)
-    np.save(d / "centroid.npy", centroid)
-
-
-def load_speaker_centroid(name: str) -> np.ndarray | None:
-    path = speaker_dir(name) / "centroid.npy"
-    if path.exists():
-        return np.load(path)
-    return None
-
-
-def load_speaker_embeddings(name: str) -> np.ndarray | None:
-    path = speaker_dir(name) / "embeddings.npy"
-    if path.exists():
-        return np.load(path)
-    return None
-
-
-def list_enrolled() -> list[str]:
-    if not SPEAKERS_DIR.exists():
-        return []
-    return [
-        d.name for d in sorted(SPEAKERS_DIR.iterdir())
-        if d.is_dir() and (d / "meta.json").exists()
-    ]
-
-
-def load_all_centroids() -> dict[str, np.ndarray]:
-    """Load all enrolled speaker centroids for matching."""
-    result = {}
-    for name in list_enrolled():
-        meta = load_speaker_meta(name)
-        if meta and meta.get("ready", False):
-            centroid = load_speaker_centroid(name)
-            if centroid is not None:
-                display_name = meta.get("display_name", name)
-                result[display_name] = centroid
-    return result
 
 
 # --- Segment filtering ---
 
+def enrollable(entry: dict) -> bool:
+    """Long enough, short enough and wordy enough to say who is speaking."""
+    duration = entry["end"] - entry["start"]
+    if duration < MIN_SEGMENT_DURATION or duration > MAX_SEGMENT_DURATION:
+        return False
+    text = entry["text"].strip()
+    if len(text.split()) < MIN_WORDS:
+        return False
+    return not is_backchannel(text)
+
+
 def filter_segments(entries: list[dict], channel: str, speaker_label: str) -> list[dict]:
     """Filter segments for enrollment quality."""
-    candidates = []
-    for e in entries:
-        if e["speaker"] != speaker_label or e["channel"] != channel:
-            continue
-        duration = e["end"] - e["start"]
-        if duration < MIN_SEGMENT_DURATION or duration > MAX_SEGMENT_DURATION:
-            continue
-        text = e["text"].strip()
-        if len(text.split()) < MIN_WORDS:
-            continue
-        if is_backchannel(text):
-            continue
-        candidates.append(e)
-    return candidates
+    return [
+        e for e in entries
+        if e["speaker"] == speaker_label and e["channel"] == channel and enrollable(e)
+    ]
 
 
-# --- Embedding extraction ---
+def accepted_mask(embeddings: np.ndarray, existing_centroid: np.ndarray | None) -> np.ndarray:
+    """Which new embeddings an enrollment keeps.
 
-def load_embedding_model(hf_token: str, device: str):
-    """Load the embedding model from the diarization pipeline."""
-    import torch
-    from pyannote.audio import Pipeline
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-community-1", token=hf_token
-    ).to(torch.device(device))
-    return pipeline._embedding
-
-
-def extract_segment_embeddings(
-    audio_path: Path, segments: list[dict], emb_model, device: str
-) -> np.ndarray:
-    """Extract one embedding per segment by slicing audio and running through model."""
-    import torch
-    import torchaudio
-
-    waveform, sr = torchaudio.load(str(audio_path))
-    # Resample to 16kHz mono if needed
-    if sr != 16000:
-        waveform = torchaudio.functional.resample(waveform, sr, 16000)
-        sr = 16000
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-
-    embeddings = []
-    for seg in segments:
-        start_sample = int(seg["start"] * sr)
-        end_sample = int(seg["end"] * sr)
-        chunk = waveform[:, start_sample:end_sample]
-
-        if chunk.shape[1] < emb_model.min_num_samples:
-            continue
-
-        # Model expects (batch, channel, samples)
-        chunk = chunk.unsqueeze(0).to(device)
-        with torch.no_grad():
-            emb = emb_model(chunk)
-        if isinstance(emb, np.ndarray):
-            embeddings.append(emb.squeeze())
-        else:
-            embeddings.append(emb.squeeze().cpu().numpy())
-
-    return np.array(embeddings) if embeddings else np.empty((0, 256))
-
-
-def filter_by_centroid(embeddings: np.ndarray, centroid: np.ndarray) -> np.ndarray:
-    """Keep only embeddings that are close enough to the centroid."""
-    if len(embeddings) == 0:
-        return embeddings
-    sims = cosine_similarities(embeddings, centroid)
-    mask = sims >= OUTLIER_THRESHOLD
-    return embeddings[mask]
-
-
-def cosine_similarities(embeddings: np.ndarray, centroid: np.ndarray) -> np.ndarray:
-    """Cosine similarity between each embedding and a centroid."""
-    norms_e = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8
-    norm_c = np.linalg.norm(centroid) + 1e-8
-    return (embeddings @ centroid) / (norms_e.squeeze() * norm_c)
+    Against an existing profile: those within ``OUTLIER_THRESHOLD`` of its
+    centroid. For a first enrollment: all but the bottom 10% by cosine to
+    their own mean, as likely noise.
+    """
+    if existing_centroid is not None:
+        return cosine_similarities(embeddings, existing_centroid) >= OUTLIER_THRESHOLD
+    sims = cosine_similarities(embeddings, embeddings.mean(axis=0))
+    return sims >= np.percentile(sims, 10)
 
 
 # --- Transcript resolution ---
@@ -244,45 +142,6 @@ def get_speaker_previews(entries: list[dict]) -> dict[str, list[str]]:
             previews[key] = []
         previews[key].append(e["text"].strip())
     return previews
-
-
-def session_audio_path(session_id: str, channel: str, tmp_dir: Path) -> Path | None:
-    session = raw_audio_session(session_id)
-    if session is None:
-        return None
-
-    parts = session.mic_parts if channel == "mic" else session.sys_parts
-    if not parts:
-        return None
-    if len(parts) == 1:
-        return parts[0]
-
-    output_path = tmp_dir / f"{channel}-{session_id}.opus"
-    list_path = tmp_dir / f"{channel}-{session_id}.txt"
-    lines = []
-    for path in parts:
-        escaped = str(path).replace("'", r"'\''")
-        lines.append(f"file '{escaped}'\n")
-    list_path.write_text("".join(lines), encoding="utf-8")
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(list_path),
-            "-c",
-            "copy",
-            str(output_path),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return output_path
 
 
 # --- Interactive TUI ---
@@ -391,103 +250,74 @@ def prompt_name(stdscr, speaker_label: str, h: int) -> str | None:
 
 # --- Enrollment logic ---
 
-def do_enrollment(transcript_path: Path, assignments: list[tuple[str, str]]):
-    """Extract embeddings for assigned speakers and store them."""
-    import torch
+def require_event_store() -> None:
+    """Refuse to write events while ``speakers/`` still holds pre-event profiles.
 
+    The first cache update would replace them with what the events say, and
+    until they are migrated the events say nothing.
+    """
+    if speakers.is_legacy_store(SPEAKERS_DIR):
+        raise EnrollmentError(
+            f"{SPEAKERS_DIR} still holds profiles from before enrollment events. "
+            "Migrate them first (see README, 'Enrolled speakers')."
+        )
+
+
+def update_cache(embedder: speakers.Embedder, force: bool = False) -> dict[str, speakers.Person]:
+    return speakers.update_cache(SPEAKERS_DIR, ENROLLMENTS_DIR, embedder, force=force)
+
+
+def do_enrollment(transcript_path: Path, assignments: list[tuple[str, str]]):
+    """Write one enrollment event per assignment, then update the cache from the events.
+
+    Raises ``EnrollmentError`` when the session audio is missing or the model
+    cannot be loaded; nothing is written for that assignment or any after it.
+    """
     entries = json.loads(transcript_path.read_text())
     ts = transcript_path.stem.removeprefix("transcript-")
-
-    hf_token = get_hf_token()
-    if not hf_token:
-        print("No HuggingFace token found. Run: huggingface-cli login", file=sys.stderr)
-        sys.exit(1)
-
+    require_event_store()
     warn_names_not_invited(ts, [name for _, name in assignments])
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("Loading embedding model...")
-    emb_model = load_embedding_model(hf_token, device)
-
-    with tempfile.TemporaryDirectory(prefix=f"enroll-{ts}-") as tmp_dir_name:
-        tmp_dir = Path(tmp_dir_name)
+    with PyannoteEmbedder() as embedder:
+        # The outlier check below compares against the current centroids.
+        update_cache(embedder)
         for composite_label, name in assignments:
             # composite_label is "channel:SPEAKER_XX"
             channel, speaker_label = composite_label.split(":", 1)
             print(f"\nProcessing {composite_label} -> {name}")
 
-            # Filter segments
             candidates = filter_segments(entries, channel, speaker_label)
             if not candidates:
                 print(f"  No suitable segments for {composite_label} (all too short/backchannel)")
                 continue
+            print(f"  {len(candidates)} candidate segments")
 
-            audio_path = session_audio_path(ts, channel, tmp_dir)
-
-            if audio_path is None or not audio_path.exists():
-                print(f"  Audio file not found for {channel} session {ts}")
+            spans = [(e["start"], e["end"]) for e in candidates]
+            embeddings = embedder.embed(ts, channel, spans)
+            existing = speakers.load_cached_centroid(SPEAKERS_DIR, slugify(name))
+            mask = accepted_mask(embeddings, existing)
+            accepted = [span for span, keep in zip(spans, mask) if keep]
+            if len(accepted) < len(spans):
+                print(f"  Rejected {len(spans) - len(accepted)}/{len(spans)} outlier embeddings")
+            if not accepted:
+                print("  All embeddings were outliers — skipping")
                 continue
 
-            print(f"  {len(candidates)} candidate segments from {audio_path.name}")
-
-            # Extract embeddings
-            print("  Extracting embeddings...")
-            new_embeddings = extract_segment_embeddings(
-                audio_path, candidates, emb_model, device
-            )
-            if len(new_embeddings) == 0:
-                print("  No embeddings extracted")
-                continue
-
-            print(f"  Got {len(new_embeddings)} embeddings")
-
-            # Load existing data if any
-            existing_embeddings = load_speaker_embeddings(name)
-            existing_meta = load_speaker_meta(name)
-
-            if existing_embeddings is not None and len(existing_embeddings) > 0:
-                # Filter new embeddings: only keep those close to existing centroid
-                centroid = np.load(speaker_dir(name) / "centroid.npy")
-                sims = cosine_similarities(new_embeddings, centroid)
-                close_mask = sims >= OUTLIER_THRESHOLD
-                accepted = new_embeddings[close_mask]
-                rejected = len(new_embeddings) - len(accepted)
-                if rejected > 0:
-                    print(f"  Rejected {rejected}/{len(new_embeddings)} outlier embeddings")
-                if len(accepted) == 0:
-                    print("  All embeddings were outliers — skipping")
-                    continue
-                all_embeddings = np.vstack([existing_embeddings, accepted])
-                new_count = len(accepted)
-            else:
-                # First enrollment: compute initial centroid, remove obvious outliers
-                initial_centroid = new_embeddings.mean(axis=0)
-                sims = cosine_similarities(new_embeddings, initial_centroid)
-                # Remove bottom 10% as likely noise
-                threshold = np.percentile(sims, 10)
-                mask = sims >= threshold
-                all_embeddings = new_embeddings[mask]
-                new_count = len(all_embeddings)
-                if len(all_embeddings) == 0:
-                    all_embeddings = new_embeddings
-                    new_count = len(all_embeddings)
-
-            centroid = all_embeddings.mean(axis=0)
-            total = len(all_embeddings)
-            ready = total >= MIN_READY_SEGMENTS
-
-            meta = {
-                "display_name": name,
-                "total_segments": total,
-                "ready": ready,
-                "sources": (existing_meta or {}).get("sources", []) + [
-                    {"file": audio_path.name, "label": composite_label, "added": new_count}
-                ],
-            }
-
-            save_speaker(name, meta, all_embeddings, centroid)
-            status = "READY" if ready else f"need {MIN_READY_SEGMENTS - total} more"
-            print(f"  Saved: {total} embeddings ({status})")
+            path = speakers.write_event(ENROLLMENTS_DIR, {
+                "type": "enroll",
+                "name": name,
+                "slug": slugify(name),
+                "session": ts,
+                "channel": channel,
+                "segments": [{"start": a, "end": b} for a, b in accepted],
+                "embedding_model": embedder.model_id,
+                "diarization_label": composite_label,
+            })
+            print(f"  Wrote {path.name}")
+            people = update_cache(embedder)
+            total = len(people[slugify(name)].segments)
+            status = "READY" if total >= MIN_READY_SEGMENTS else f"need {MIN_READY_SEGMENTS - total} more"
+            print(f"  {name}: {total} segments ({status})")
 
     # Update transcript files with the new names
     if assignments:
@@ -573,44 +403,77 @@ def _format_transcript(entries: list[dict], ts: str) -> str:
 # --- CLI ---
 
 def list_speakers():
-    names = list_enrolled()
+    status, reason = speakers.cache_status(SPEAKERS_DIR, ENROLLMENTS_DIR)
+    if status == "legacy":
+        print(f"({reason}; not yet migrated to enrollment events)")
+    elif status == "stale":
+        print(f"(cache out of date: {reason}; run hugin-meet-enroll --update-cache)")
+    names = [
+        d for d in sorted(SPEAKERS_DIR.iterdir()) if d.is_dir() and (d / "meta.json").exists()
+    ] if SPEAKERS_DIR.exists() else []
     if not names:
         print("No enrolled speakers.")
         return
-    for name in names:
-        meta = load_speaker_meta(name)
-        if not meta:
-            continue
-        display = meta.get("display_name", name)
+    for d in names:
+        meta = json.loads((d / "meta.json").read_text())
+        display = meta.get("display_name", d.name)
         total = meta.get("total_segments", 0)
         ready = meta.get("ready", False)
         status = "ready" if ready else f"need {max(0, MIN_READY_SEGMENTS - total)} more"
         sources = meta.get("sources", [])
-        source_str = ", ".join(s["file"] for s in sources[-3:])  # show last 3
+        source_str = ", ".join(
+            f"{s['channel']}-{s['session']}" if "session" in s else s.get("file", "?")
+            for s in sources[-3:]
+        )
         always = "  [always a candidate]" if meta.get("always_candidate") else ""
         print(f"  {display:20s}  {total:3d} segments  ({status})  from: {source_str}{always}")
 
 
-def _resolve_speaker_dir(name: str) -> Path:
-    d = speaker_dir(name)
-    if not d.exists():
-        # Try case-insensitive
-        for n in list_enrolled():
-            meta = load_speaker_meta(n)
-            if meta and meta.get("display_name", "").lower() == name.lower():
-                d = speaker_dir(n)
-                break
-    if not d.exists():
-        print(f"Speaker '{name}' not found.", file=sys.stderr)
-        sys.exit(1)
-    return d
+def _current_people() -> dict[str, speakers.Person]:
+    return speakers.fold(speakers.load_events(ENROLLMENTS_DIR))
+
+
+def _write_and_update(event: dict) -> None:
+    path = speakers.write_event(ENROLLMENTS_DIR, event)
+    print(f"Wrote {path}")
+    with PyannoteEmbedder() as embedder:
+        update_cache(embedder)
 
 
 def remove_speaker(name: str):
-    import shutil
-    d = _resolve_speaker_dir(name)
-    shutil.rmtree(d)
-    print(f"Removed '{name}'")
+    require_event_store()
+    person = speakers.resolve_person(_current_people(), name)
+    _write_and_update({"type": "remove_person", "name": person.name, "slug": person.slug})
+    print(f"Removed '{person.name}'")
+
+
+def parse_span(text: str) -> dict:
+    """'120-185.5' -> {'start': 120.0, 'end': 185.5}, seconds in the session timeline."""
+    try:
+        start, end = (float(x) for x in text.split("-", 1))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected START-END in seconds, got {text!r}")
+    return {"start": start, "end": end}
+
+
+def remove_session(name: str, session: str, channel: str | None, spans: list[dict] | None):
+    """Drop a person's segments from one session, or only those overlapping ``spans``."""
+    require_event_store()
+    people = _current_people()
+    person = speakers.resolve_person(people, name)
+    event = {
+        "type": "remove_segments", "name": person.name, "slug": person.slug,
+        "session": session, "channel": channel,
+    }
+    if spans:
+        event["segments"] = spans
+    # A permanent event that changes nothing is a typo; refuse it.
+    after = speakers.fold([*speakers.load_events(ENROLLMENTS_DIR), {"schema": speakers.SCHEMA, **event}])
+    removed = len(person.segments) - len(after[person.slug].segments if person.slug in after else ())
+    if removed == 0:
+        raise EnrollmentError(f"{person.name} has no segments there; nothing to remove")
+    _write_and_update(event)
+    print(f"Removed {removed} segment(s) of {session} from '{person.name}'")
 
 
 def set_always_candidate(name: str, value: bool):
@@ -620,20 +483,30 @@ def set_always_candidate(name: str, value: bool):
     attendee list in a useful way, and a meeting with no attendee list at all
     would otherwise have no candidates.
     """
-    d = _resolve_speaker_dir(name)
-    meta_path = d / "meta.json"
-    meta = json.loads(meta_path.read_text())
-    meta["always_candidate"] = value
-    meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    require_event_store()
+    person = speakers.resolve_person(_current_people(), name)
+    if person.always_candidate != value:
+        _write_and_update({
+            "type": "always_candidate", "name": person.name, "slug": person.slug, "value": value,
+        })
     state = "always a candidate" if value else "candidate only when invited"
-    print(f"{meta.get('display_name', name)}: {state}")
+    print(f"{person.name}: {state}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Enroll speaker voices for recognition")
     parser.add_argument("transcript", nargs="?", help="Transcript JSON file (default: latest)")
     parser.add_argument("--list", action="store_true", help="List enrolled speakers")
-    parser.add_argument("--remove", metavar="NAME", help="Remove an enrolled speaker")
+    parser.add_argument("--remove", metavar="NAME", help="Forget an enrolled speaker entirely")
+    parser.add_argument(
+        "--remove-session", nargs=2, metavar=("NAME", "SESSION"),
+        help="Drop NAME's segments from SESSION (all of them, or those overlapping --span)",
+    )
+    parser.add_argument("--channel", choices=speakers.CHANNELS, help="With --remove-session: only this channel")
+    parser.add_argument(
+        "--span", type=parse_span, action="append", metavar="START-END",
+        help="With --remove-session: seconds in the session timeline; repeatable",
+    )
     parser.add_argument(
         "--always", metavar="NAME",
         help="Make NAME a match candidate in every meeting, whether invited or not",
@@ -642,25 +515,43 @@ def main():
         "--not-always", metavar="NAME",
         help="Undo --always: NAME is a candidate only when the invitation lists them",
     )
+    parser.add_argument(
+        "--update-cache", action="store_true",
+        help="Bring speakers/ up to date with the enrollment events",
+    )
+    parser.add_argument(
+        "--rebuild", action="store_true",
+        help="Rebuild speakers/ from the enrollment events, re-embedding every segment",
+    )
     args = parser.parse_args()
 
-    if args.list:
-        list_speakers()
-    elif args.remove:
-        remove_speaker(args.remove)
-    elif args.always:
-        set_always_candidate(args.always, True)
-    elif args.not_always:
-        set_always_candidate(args.not_always, False)
-    else:
-        transcript_path = resolve_transcript(args.transcript)
-        print(f"Using transcript: {transcript_path.name}")
-        assignments = curses.wrapper(interactive_enroll, transcript_path)
-        if assignments:
-            print(f"\nEnrolling {len(assignments)} speaker(s)...")
-            do_enrollment(transcript_path, assignments)
+    try:
+        if args.list:
+            list_speakers()
+        elif args.remove:
+            remove_speaker(args.remove)
+        elif args.remove_session:
+            remove_session(*args.remove_session, args.channel, args.span)
+        elif args.always:
+            set_always_candidate(args.always, True)
+        elif args.not_always:
+            set_always_candidate(args.not_always, False)
+        elif args.update_cache or args.rebuild:
+            with PyannoteEmbedder() as embedder:
+                people = update_cache(embedder, force=args.rebuild)
+            print(f"{SPEAKERS_DIR}: {len(people)} speaker(s) from {ENROLLMENTS_DIR}")
         else:
-            print("No speakers to enroll.")
+            transcript_path = resolve_transcript(args.transcript)
+            print(f"Using transcript: {transcript_path.name}")
+            assignments = curses.wrapper(interactive_enroll, transcript_path)
+            if assignments:
+                print(f"\nEnrolling {len(assignments)} speaker(s)...")
+                do_enrollment(transcript_path, assignments)
+            else:
+                print("No speakers to enroll.")
+    except EnrollmentError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

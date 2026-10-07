@@ -393,10 +393,10 @@ def load_pyannote_embedding_model(hf_token: str, device: str):
     import torch
     from pyannote.audio import Pipeline
 
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-community-1",
-        token=hf_token,
-    ).to(torch.device(device))
+    from .speakers import EMBEDDING_MODEL
+
+    # The same model the enrolled centroids were embedded with (speakers.py).
+    pipeline = Pipeline.from_pretrained(EMBEDDING_MODEL, token=hf_token).to(torch.device(device))
     return pipeline._embedding
 
 
@@ -1052,6 +1052,29 @@ def process_part(
             _cleanup_pcm_wav(sys_part)
 
 
+def ensure_speaker_cache() -> None:
+    """Bring ``speakers/`` up to date with the enrollment events before it is read.
+
+    The update runs as ``hugin-meet-enroll --update-cache`` in a subprocess,
+    like each part's transcription, so its model leaves the GPU when it is
+    done. It only embeds when the events or the embedding model changed; a
+    failure stops the transcription rather than name speakers from a cache
+    that no longer matches the events.
+    """
+    from . import speakers
+
+    status, reason = speakers.cache_status(SPEAKERS_DIR, load_config().enrollments_dir)
+    if status == "legacy":
+        print(f"  Note: {reason}; using them as they are until they are migrated")
+        return
+    if status == "stale":
+        print(f"  Speaker cache out of date ({reason}); updating", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", "hugin_meetings.enroll", "--update-cache"],
+            check=True, env=_with_cuda_library_path(),
+        )
+
+
 def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str = DEFAULT_DIARIZER):
     """Process a single recording session, possibly spanning multiple rotated parts."""
     from . import context as meeting_context
@@ -1075,6 +1098,8 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
             f"No context for {session_id} — run hugin-meet-context {session_id} first"
         )
     language = context.language_value
+    if do_diarize:
+        ensure_speaker_cache()
     allowed_speakers = speaker_allowlist(context)
     print(
         "  Speaker candidates from calendar: "

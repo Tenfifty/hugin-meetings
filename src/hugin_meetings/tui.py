@@ -499,7 +499,7 @@ class AudioTui:
         try:
             with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
                 self.enroll_module.do_enrollment(rec.transcript_json, assignments)
-        except SystemExit as exc:
+        except (SystemExit, self.enroll_module.EnrollmentError) as exc:
             self.append_log(buffer.getvalue().strip())
             self.set_message(f"Enrollment failed: {exc}")
             return
