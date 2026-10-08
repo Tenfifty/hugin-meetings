@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+from urllib.parse import unquote
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -331,7 +332,12 @@ def year_subdir(name_or_ts: str) -> str:
 
 
 def relative_link(target: Path, base_dir: Path) -> str:
-    return os.path.relpath(target, base_dir)
+    """A relative markdown link target. Spaces are encoded so Obsidian sees a link.
+
+    Obsidian ignores `[x](a b.md)`, so it neither renders nor updates such a link
+    when the target moves. Read link targets back with `unquote`.
+    """
+    return os.path.relpath(target, base_dir).replace(" ", "%20")
 
 
 def audio_duration(path: Path | None) -> float:
@@ -532,7 +538,7 @@ def parse_markdown_link(value: str) -> tuple[str, Path] | None:
     match = LINK_RE.search(value)
     if not match:
         return None
-    return match.group(1), Path(match.group(2))
+    return match.group(1), Path(unquote(match.group(2)))
 
 
 def parse_calendar_metadata(path: Path | None) -> dict[str, str]:
@@ -562,7 +568,7 @@ def parse_customer_metadata(path: Path | None) -> CustomerMetadata | None:
                 transcript_path=transcript_path,
                 model="summary",
                 customer_name=name,
-                customer_path=(path.parent / rel_path).resolve(),
+                customer_path=current_customer_path(name, (path.parent / unquote(rel_path)).resolve()),
             )
     return None
 
@@ -635,7 +641,10 @@ def deserialize_customer_state(payload: dict) -> CustomerState:
         action = "no_match"
 
     customer_path_value = payload.get("customer_path")
-    customer_path = Path(customer_path_value).resolve() if customer_path_value else None
+    customer_path = current_customer_path(
+        payload.get("customer_name") or None,
+        Path(customer_path_value).resolve() if customer_path_value else None,
+    )
 
     return CustomerState(
         action=action,  # type: ignore[arg-type]
@@ -682,10 +691,21 @@ def summary_excerpt(path: Path, max_len: int = 120) -> str:
 
 
 def list_customer_notes() -> list[CustomerNote]:
+    """Project notes: files directly in CUSTOMERS_DIR or in one of its inactive dirs.
+
+    Any other subdirectory holds material for a project (`AKA/`, `Notana Care/`),
+    not projects of its own, so it is not a match candidate.
+    """
     notes: list[CustomerNote] = []
     for path in sorted(CUSTOMERS_DIR.rglob("*.md")):
+        parts = path.relative_to(CUSTOMERS_DIR).parts
+        if len(parts) == 1:
+            is_active = True
+        elif len(parts) == 2 and parts[0] in INACTIVE_DIR_NAMES:
+            is_active = False
+        else:
+            continue
         name = path.stem
-        is_active = not any(part in INACTIVE_DIR_NAMES for part in path.parts)
         text = path.read_text()
         preview = re.sub(r"\s+", " ", text).strip()[:MAX_CANDIDATE_PREVIEW]
         notes.append(
@@ -899,6 +919,36 @@ def resolve_customer_path(name: str | None, candidates: list[CustomerNote]) -> P
     return None
 
 
+def _folder_names() -> set[str]:
+    """Casefolded names of every directory under CUSTOMERS_DIR: material folders and inactive dirs."""
+    if not CUSTOMERS_DIR or not CUSTOMERS_DIR.is_dir():
+        return set()
+    return {path.name.casefold() for path in CUSTOMERS_DIR.rglob("*") if path.is_dir()}
+
+
+def _is_folder_name(name: str | None) -> bool:
+    """True when `name` names a directory under CUSTOMERS_DIR and no project note of that name exists.
+
+    A material folder shares its name with its note (`AKA/` next to `AKA.md`), so
+    naming it still resolves to the note. Anything else that names a folder is not
+    a project and must never be linked to or created.
+    """
+    return bool(name) and name.strip().casefold() in _folder_names() and resolve_customer_path(name, []) is None
+
+
+def current_customer_path(name: str | None, path: Path | None) -> Path | None:
+    """The stored path if it still exists, otherwise the project note of the same name.
+
+    Paths are stored absolute, so a note moved to another folder (or the projects
+    dir moved as a whole) leaves stale paths in old meeting state. Looking the
+    note up by name again keeps those meetings linked. When no note of that name
+    exists, the stale path is returned unchanged so the failure stays visible.
+    """
+    if path is None or path.exists() or not name:
+        return path
+    return resolve_customer_path(name, []) or path
+
+
 def _customer_note_filename(name: str) -> str:
     cleaned = re.sub(r"[\\/]+", "-", name).strip().strip(".")
     if not cleaned:
@@ -913,6 +963,12 @@ def ensure_customer_note(customer_name: str) -> Path:
 
     CUSTOMERS_DIR.mkdir(parents=True, exist_ok=True)
     path = CUSTOMERS_DIR / _customer_note_filename(customer_name)
+    # A folder name that did not resolve above is a material or inactive dir,
+    # never a project; creating a note for it would give one project two names.
+    if _is_folder_name(customer_name):
+        raise ValueError(
+            f"{customer_name!r} is a folder in {CUSTOMERS_DIR}, not a project note"
+        )
     if not path.exists():
         path.write_text(f"# {customer_name}\n", encoding="utf-8")
     return path
@@ -978,9 +1034,24 @@ def decide_customer(
     suggested_name = payload.get("suggested_name") or None
     rationale = str(payload.get("rationale", "")).strip()
 
+    # Folder names are never guesses: a material folder named after its note
+    # resolves to the note, and any other folder is not a project at all.
+    if _is_folder_name(customer_name):
+        rationale = f"{rationale} (Ignored {customer_name!r}: a folder, not a project.)".strip()
+        customer_name = None
+    if _is_folder_name(suggested_name):
+        rationale = f"{rationale} (Ignored suggestion {suggested_name!r}: a folder, not a project.)".strip()
+        suggested_name = None
+
     customer_path = resolve_customer_path(customer_name, candidates)
+    # A "new" project that already has a note under that name is a link, not a second note.
+    existing = resolve_customer_path(suggested_name, candidates) if action == "suggest_new" else None
+    if existing:
+        action, customer_name, customer_path, suggested_name = "link_existing", existing.stem, existing, None
     if action == "link_existing" and not customer_path:
         action = "suggest_new" if suggested_name else "no_match"
+    if action == "suggest_new" and not suggested_name:
+        action = "no_match"
 
     return CustomerDecision(
         action=action,
@@ -1154,9 +1225,24 @@ def _customer_note_links(customer_path: Path, summary_path: Path) -> tuple[str, 
     )
 
 
-def _find_customer_note_entry_bounds(text: str, summary_rel: str) -> tuple[int, int] | None:
-    marker = f"[Full summary]({summary_rel})"
-    idx = text.find(marker)
+FULL_SUMMARY_LINK_RE = re.compile(r"\[Full summary\]\(([^)]+)\)")
+
+
+def _find_customer_note_entry_bounds(text: str, summary_name: str) -> tuple[int, int] | None:
+    """The entry in a project note whose "Full summary" link points at `summary_name`.
+
+    Matched on the file name, which is unique per meeting, rather than on the
+    whole relative path: the path changes whenever the vault is reorganised or
+    Obsidian rewrites the link, and a missed match would duplicate the entry.
+    """
+    idx = next(
+        (
+            match.start()
+            for match in FULL_SUMMARY_LINK_RE.finditer(text)
+            if Path(unquote(match.group(1))).name == summary_name
+        ),
+        -1,
+    )
     if idx < 0:
         return None
 
@@ -1197,7 +1283,7 @@ def sync_customer_note(customer_path: Path, summary_path: Path) -> None:
     entry = "\n".join(line for line in entry_lines if line is not None)
     entry = re.sub(r"\n{3,}", "\n\n", entry).strip() + "\n\n"
 
-    bounds = _find_customer_note_entry_bounds(customer_text, summary_rel)
+    bounds = _find_customer_note_entry_bounds(customer_text, summary_path.name)
     if bounds is not None:
         start, end = bounds
         updated = customer_text[:start].rstrip() + "\n\n" + entry + customer_text[end:].lstrip()
@@ -1222,8 +1308,7 @@ def remove_customer_note_link(customer_path: Path, summary_path: Path) -> None:
     if not customer_path.exists():
         return
     text = customer_path.read_text()
-    summary_rel, _ = _customer_note_links(customer_path, summary_path)
-    bounds = _find_customer_note_entry_bounds(text, summary_rel)
+    bounds = _find_customer_note_entry_bounds(text, summary_path.name)
     if bounds is None:
         return
     start, end = bounds

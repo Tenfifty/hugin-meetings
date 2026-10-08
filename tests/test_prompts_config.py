@@ -151,6 +151,33 @@ class ProjectMatcherPromptTests(unittest.TestCase):
         self.assertTrue(states["Active"])
         self.assertFalse(states["Archived"])
 
+    def test_material_subdirectories_are_not_projects(self) -> None:
+        (self.customers_dir / "AKA.md").write_text("# AKA\n")
+        material = self.customers_dir / "AKA" / "AKA-brief.md"
+        material.parent.mkdir()
+        material.write_text("# Brief\n")
+        nested = self.customers_dir / "inaktiva" / "Old" / "notes.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("# Notes\n")
+
+        names = [note.name for note in pipeline.list_customer_notes()]
+
+        self.assertEqual(names, ["AKA"])
+
+    def test_folder_name_guess_resolves_to_same_named_note(self) -> None:
+        note = self.customers_dir / "AKA.md"
+        note.write_text("# AKA\n")
+        (self.customers_dir / "AKA").mkdir()
+
+        self.assertEqual(pipeline.ensure_customer_note("AKA"), note)
+
+    def test_folder_name_guess_without_note_creates_nothing(self) -> None:
+        (self.customers_dir / "Notana").mkdir()
+
+        with self.assertRaises(ValueError):
+            pipeline.ensure_customer_note("Notana")
+        self.assertFalse((self.customers_dir / "Notana.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

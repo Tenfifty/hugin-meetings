@@ -67,7 +67,10 @@ meetings:
     #     exit "$status"
 
   # Project / customer matching. Points at a directory of markdown notes
-  # (one per project/customer). Leave unset to disable matching.
+  # (one per project/customer). Only notes directly in it, or directly in one
+  # of the inactive_dir_names below, are projects; any other subdirectory holds
+  # material for a project (e.g. `Acme/` next to `Acme.md`) and is not matched.
+  # Leave unset to disable matching.
   project_matcher:
     projects_dir: ~/Documents/notes/projects
     # Note representing your own organization — gets priority in matching.
