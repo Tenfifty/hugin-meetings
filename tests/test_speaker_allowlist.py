@@ -90,6 +90,24 @@ def test_allowlist_counts_the_organizer(speakers):
     assert "Charlotte Eriksson" in transcribe.speaker_allowlist(ctx)
 
 
+def test_allowlist_follows_the_chosen_event(speakers):
+    """2026-10-08: the guess was an overlapping meeting with other invitees."""
+    from hugin_meetings import context as meeting_context
+
+    ctx = _context(attendees=[{"displayName": "Charlotte Eriksson"}])
+    other = dict(ctx.calendar["candidates"][0])
+    ctx.calendar["candidates"][0]["event"] = {**ctx.calendar["candidates"][0]["event"], "id": "guess"}
+    other["event"] = {"id": "real", "summary": "y", "attendees": [{"displayName": "Johannes Öhlin"}]}
+    ctx.calendar["candidates"].append(other)
+    assert "Charlotte Eriksson" in transcribe.speaker_allowlist(ctx)
+
+    ctx.calendar["chosen"] = {"calendar_id": "primary", "event_id": "real", "source": "manual"}
+    assert transcribe.speaker_allowlist(ctx) == ["David Fendrich", "Johannes Öhlin"]
+
+    ctx.calendar["chosen"] = {"calendar_id": "", "event_id": "", "source": "manual"}
+    assert transcribe.speaker_allowlist(ctx) == ["David Fendrich"]
+
+
 def test_allowlist_without_attendees_is_only_always(speakers):
     assert transcribe.speaker_allowlist(_context(attendees=None)) == ["David Fendrich"]
     assert transcribe.speaker_allowlist(_context(attendees=[])) == ["David Fendrich"]

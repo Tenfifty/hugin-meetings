@@ -127,6 +127,8 @@ def verify(
     *,
     language: str | None = None,
     customer: pipeline.CustomerState | None = None,
+    event=None,
+    no_event: bool = False,
 ) -> MeetingContext:
     """Record a person's decision about a session, and act on it.
 
@@ -134,6 +136,9 @@ def verify(
     context and materializes the customer state that every later stage reads.
     Creating a customer note happens here, as the direct consequence of a
     person choosing to create one — never as a side effect further down.
+
+    ``event`` is one of the stored candidates (a ``calendar_match.Candidate``),
+    chosen as the meeting this was; ``no_event`` says it was none of them.
     """
     if language and language != context.language.get("value"):
         context.language = {
@@ -141,6 +146,8 @@ def verify(
             "value": language,
             "source": "manual",
         }
+    if event is not None or no_event:
+        _choose_event(context, None if no_event else event)
     if customer is not None:
         customer.verified = True
         customer = pipeline.materialize_verified_customer_state(customer)
@@ -191,13 +198,61 @@ def _guess_calendar(session: pipeline.RawAudioSession) -> tuple[dict[str, Any] |
     }, ""
 
 
-def best_candidate(context: "MeetingContext"):
+def _event_key(payload: dict[str, Any]) -> tuple[str, str]:
+    return payload.get("calendar_id", ""), (payload.get("event") or {}).get("id", "")
+
+
+def _choose_event(context: MeetingContext, candidate) -> None:
+    """Store which candidate this session was, or that it was none of them.
+
+    The ranking is left as it was guessed; the choice sits beside it, so the
+    guess stays visible and the choice reads as a choice.
+    """
+    if not (context.calendar or {}).get("candidates"):
+        raise ValueError(f"{context.session_id} has no calendar candidates to choose from")
+    if candidate is None:
+        context.calendar["chosen"] = {"calendar_id": "", "event_id": "", "source": "manual"}
+        return
+    calendar_id, event_id = candidate.calendar_id, candidate.event.get("id", "")
+    if not event_id:
+        raise ValueError(f"Event {candidate.event.get('summary')!r} has no id to choose it by")
+    if (calendar_id, event_id) not in {_event_key(c) for c in context.calendar["candidates"]}:
+        raise ValueError(f"Event {event_id} is not among the candidates for {context.session_id}")
+    context.calendar["chosen"] = {"calendar_id": calendar_id, "event_id": event_id, "source": "manual"}
+
+
+def event_chosen_by_hand(context: "MeetingContext") -> bool:
+    return bool((context.calendar or {}).get("chosen"))
+
+
+def ordered_candidates(context: "MeetingContext") -> list:
+    """The stored events, the one this session was first.
+
+    A person's choice outranks the guessed order. Choosing none leaves no
+    events at all, so nothing downstream names the meeting or lets its
+    invitees' names onto the speakers.
+    """
     from . import calendar_match
 
-    payload = (context.calendar or {}).get("candidates") or []
-    if not payload:
-        return None
-    return calendar_match.deserialize_candidate(payload[0])
+    payload = list((context.calendar or {}).get("candidates") or [])
+    chosen = (context.calendar or {}).get("chosen")
+    if chosen:
+        if not chosen.get("event_id"):
+            return []
+        key = (chosen.get("calendar_id", ""), chosen["event_id"])
+        index = next((i for i, c in enumerate(payload) if _event_key(c) == key), None)
+        if index is None:
+            raise ValueError(
+                f"Chosen event {key[1]} is not among the candidates for {context.session_id}"
+            )
+        payload.insert(0, payload.pop(index))
+    return [calendar_match.deserialize_candidate(c) for c in payload]
+
+
+def best_candidate(context: "MeetingContext"):
+    """The event this session was: the one a person chose, else the best guess."""
+    candidates = ordered_candidates(context)
+    return candidates[0] if candidates else None
 
 
 def calendar_block(context: "MeetingContext") -> str:
@@ -208,8 +263,9 @@ def calendar_block(context: "MeetingContext") -> str:
     if not payload.get("window") or not payload.get("candidates"):
         return ""
     window = calendar_match.deserialize_window(payload["window"])
-    candidates = [calendar_match.deserialize_candidate(c) for c in payload["candidates"]]
-    return calendar_match.render_metadata(window, candidates, [])
+    return calendar_match.render_metadata(
+        window, ordered_candidates(context), [], chosen_by_hand=event_chosen_by_hand(context)
+    )
 
 
 def calendar_fields(context: "MeetingContext") -> dict[str, str]:

@@ -164,3 +164,103 @@ class CustomerGuessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _candidate(event_id: str, summary: str, score: float, attendees: list[str]) -> dict:
+    return {
+        "calendar_id": "primary",
+        "calendar_name": "Me",
+        "event": {
+            "id": event_id,
+            "summary": summary,
+            "attendees": [{"email": email} for email in attendees],
+        },
+        "event_start": "2026-10-08T14:00:00+02:00",
+        "event_end": "2026-10-08T14:45:00+02:00",
+        "response_status": "accepted",
+        "score": score,
+        "reasons": [],
+    }
+
+
+class EventChoiceTests(unittest.TestCase):
+    """The best-scoring event can be the wrong meeting; a person must be able to say so."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name)
+        patcher = patch.object(
+            meeting_context,
+            "context_path",
+            side_effect=lambda ts: self.dir / f"context-{ts}.json",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def make(self) -> meeting_context.MeetingContext:
+        return meeting_context.MeetingContext(
+            session_id="20261008-140505",
+            calendar={
+                "window": {
+                    "start": "2026-10-08T14:05:05+02:00",
+                    "end": "2026-10-08T15:04:15+02:00",
+                    "duration_seconds": 3550.0,
+                },
+                "candidates": [
+                    _candidate("aka", "AKA - Produktutvecklingsmöte", 143.7, ["kristian@x.cc"]),
+                    _candidate("lund", "Lund-möte", 129.3, ["bernard@tenfifty.io"]),
+                ],
+            },
+        )
+
+    def chosen(self, event_id: str):
+        return next(
+            c for c in meeting_context.ordered_candidates(self.make()) if c.event["id"] == event_id
+        )
+
+    def test_without_a_choice_the_guess_stands(self) -> None:
+        context = self.make()
+        self.assertFalse(meeting_context.event_chosen_by_hand(context))
+        self.assertEqual(context.event_title, "AKA - Produktutvecklingsmöte")
+        self.assertIn("confidence (score 143.7)", meeting_context.calendar_block(context))
+
+    def test_a_chosen_event_outranks_the_guess(self) -> None:
+        meeting_context.verify(self.make(), event=self.chosen("lund"))
+        loaded = meeting_context.load_context("20261008-140505")
+
+        self.assertTrue(loaded.verified)
+        self.assertEqual(loaded.event_title, "Lund-möte")
+        self.assertEqual(
+            meeting_context.best_candidate(loaded).event["attendees"],
+            [{"email": "bernard@tenfifty.io"}],
+        )
+        block = meeting_context.calendar_block(loaded)
+        self.assertIn("- Event: Lund-möte", block)
+        self.assertIn("- Match status: chosen by hand", block)
+        self.assertIn("- Alternatives: AKA - Produktutvecklingsmöte", block)
+        # The guessed ranking is kept as it was; the choice sits beside it.
+        self.assertEqual(loaded.calendar["candidates"][0]["event"]["id"], "aka")
+
+    def test_none_of_them_leaves_no_event(self) -> None:
+        meeting_context.verify(self.make(), no_event=True)
+        loaded = meeting_context.load_context("20261008-140505")
+
+        self.assertIsNone(meeting_context.best_candidate(loaded))
+        self.assertEqual(loaded.event_title, "")
+        block = meeting_context.calendar_block(loaded)
+        self.assertNotIn("- Event:", block)
+        self.assertIn("none of the calendar events (chosen by hand)", block)
+
+    def test_an_event_from_elsewhere_is_refused(self) -> None:
+        from hugin_meetings import calendar_match
+
+        stranger = calendar_match.deserialize_candidate(_candidate("other", "Annat", 1.0, []))
+        with self.assertRaises(ValueError):
+            meeting_context.verify(self.make(), event=stranger)
+
+    def test_a_choice_that_lost_its_candidate_is_an_error_not_a_guess(self) -> None:
+        context = self.make()
+        context.calendar["chosen"] = {"calendar_id": "primary", "event_id": "gone", "source": "manual"}
+        with self.assertRaises(ValueError):
+            meeting_context.best_candidate(context)

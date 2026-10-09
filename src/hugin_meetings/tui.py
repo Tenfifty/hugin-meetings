@@ -176,7 +176,7 @@ class AudioTui:
             )
         if not rec.is_verified:
             raise RuntimeError(
-                f"{rec.timestamp} is not verified — check language and customer first (v)"
+                f"{rec.timestamp} is not verified — check language, event and customer first (v)"
             )
         if not rec.has_transcript:
             if not rec.mic_parts:
@@ -565,6 +565,9 @@ class AudioTui:
             elif key in (ord("l"), ord("L")):
                 self.set_language(stdscr, rec)
                 self.refresh()
+            elif key in (ord("e"), ord("E")):
+                self.set_event(stdscr, rec)
+                self.refresh()
             elif key in (ord("c"), ord("C")):
                 self.remove_customer(stdscr, rec)
                 self.refresh()
@@ -619,6 +622,80 @@ class AudioTui:
             self.set_message(
                 f"Language set to {language.strip()} — transcript already exists, re-transcribe to apply."
             )
+
+    def set_event(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
+        """Choose which calendar event this was, or that it was none of them.
+
+        The event decides more than the title: its invitees are the only names
+        the speakers may be given, so a wrong guess puts the wrong people in
+        the transcript.
+        """
+        from . import calendar_match
+        from . import context as meeting_context
+
+        context = self.session_context(rec)
+        if context is None:
+            return
+        stored = (context.calendar or {}).get("candidates") or []
+        if not stored:
+            self.set_message("No calendar events to choose from.")
+            return
+        options = [calendar_match.deserialize_candidate(c) for c in stored]
+        picked = self.pick_event(stdscr, options, meeting_context.best_candidate(context))
+        if picked is False:
+            return
+        meeting_context.verify(context, event=picked, no_event=picked is None)
+        title = (picked.event.get("summary") or "(untitled)") if picked else "no event"
+        self.append_log(f"Event for {rec.timestamp}: {title}")
+        self.set_message(f"Event set to {title}.")
+        if rec.has_transcript:
+            try:
+                self.run_command(
+                    stdscr,
+                    f"Updating the calendar block in transcript-{rec.timestamp}.md",
+                    [resolve_sibling_bin("hugin-meet-match-calendar"), f"transcript-{rec.timestamp}.md"],
+                )
+            except Exception as exc:
+                self.set_message(f"Event set to {title}, but the transcript block failed: {exc}")
+                return
+            self.set_message(
+                f"Event set to {title} — re-transcribe to apply it to the speaker names."
+            )
+
+    def pick_event(self, stdscr, options, current):
+        """A stored candidate, None for "none of these", or False if cancelled."""
+        rows = options + [None]
+        index = rows.index(current) if current in rows else len(rows) - 1
+        while True:
+            stdscr.erase()
+            h, w = stdscr.getmaxyx()
+            stdscr.addstr(0, 0, "Which meeting was this?", curses.A_BOLD)
+            stdscr.addstr(1, 0, "Enter: choose  q: cancel", curses.A_DIM)
+            for offset, option in enumerate(rows[: max(1, h - 4)]):
+                marker = ">" if offset == index else " "
+                if option is None:
+                    text = f"{marker} (none of these)"
+                else:
+                    invited = len(option.event.get("attendees") or [])
+                    start = option.event_start.astimezone().strftime("%Y-%m-%d %H:%M")
+                    end = option.event_end.astimezone().strftime("%H:%M")
+                    text = (
+                        f"{marker} {option.event.get('summary') or '(untitled)'}  "
+                        f"[{start}–{end}, {invited} invited, score {option.score:.0f}]"
+                    )
+                attr = curses.color_pair(1) | curses.A_BOLD if offset == index else curses.A_NORMAL
+                stdscr.addstr(3 + offset, 0, text[: w - 1], attr)
+            stdscr.refresh()
+
+            key = stdscr.getch()
+            if key in (ord("q"), ord("Q"), 27):
+                return False
+            if key == curses.KEY_UP and index > 0:
+                index -= 1
+            elif key == curses.KEY_DOWN and index < len(rows) - 1:
+                index += 1
+            elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
+                return rows[index]
 
     def draw_customer_screen(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
         stdscr.erase()
@@ -694,7 +771,7 @@ class AudioTui:
                     y += 1
             y += 1
 
-        footer = "a: accept + process  m: pick existing  n: free text  l: language  g: guess/retry  c: no customer  b: back"
+        footer = "a: accept + process  m: pick existing  n: free text  l: language  e: event  g: guess/retry  c: no customer  b: back"
         stdscr.addstr(h - 1, 0, footer[: w - 1], curses.A_DIM)
         stdscr.refresh()
 

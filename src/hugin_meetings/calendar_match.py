@@ -219,8 +219,11 @@ def metadata_fields(block: str) -> dict[str, str]:
     )
 
 
-def stored_candidates(transcript_path: Path) -> list[Candidate] | None:
+def stored_candidates(transcript_path: Path) -> tuple[list[Candidate], bool] | None:
     """The events a person already verified for this session, if any.
+
+    Returns them with the chosen one first, and whether a person chose it.
+    The list is empty when the choice was that it matched none of them.
 
     Re-querying Google here could annotate the transcript with a different
     event than the one confirmed before processing. The window still comes
@@ -235,10 +238,9 @@ def stored_candidates(transcript_path: Path) -> list[Candidate] | None:
     context = meeting_context.load_context(ts)
     if context is None or not context.calendar:
         return None
-    candidates = [
-        deserialize_candidate(item) for item in context.calendar.get("candidates", [])
-    ]
-    return candidates or None
+    if not context.calendar.get("candidates"):
+        return None
+    return meeting_context.ordered_candidates(context), meeting_context.event_chosen_by_hand(context)
 
 
 def gws_environment() -> dict[str, str]:
@@ -638,6 +640,8 @@ def render_metadata(
     window: MatchWindow,
     candidates: list[Candidate],
     searched_calendars: list[dict[str, Any]],
+    *,
+    chosen_by_hand: bool = False,
 ) -> str:
     lines = [
         METADATA_START,
@@ -658,11 +662,12 @@ def render_metadata(
     )
 
     if not candidates:
-        lines.extend(
-            [
-                "- Match status: no plausible calendar event found",
-            ]
+        status = (
+            "none of the calendar events (chosen by hand)"
+            if chosen_by_hand
+            else "no plausible calendar event found"
         )
+        lines.append(f"- Match status: {status}")
     else:
         event = best.event
         organizer = event.get("organizer", {})
@@ -686,9 +691,12 @@ def render_metadata(
             )
             lines.append(f"- Alternatives: {alt_text}")
 
-        lines.append(
-            f"- Match status: {confidence_label(best.score)} confidence (score {best.score:.1f})"
-        )
+        if chosen_by_hand:
+            lines.append("- Match status: chosen by hand")
+        else:
+            lines.append(
+                f"- Match status: {confidence_label(best.score)} confidence (score {best.score:.1f})"
+            )
 
     lines.append(METADATA_END)
     return "\n".join(lines)
@@ -780,8 +788,9 @@ def main() -> int:
         transcript_path = resolve_transcript(args.transcript)
         window = load_transcript(transcript_path)
         stored = None if args.rematch else stored_candidates(transcript_path)
+        chosen_by_hand = False
         if stored is not None:
-            candidates, calendars = stored, []
+            (candidates, chosen_by_hand), calendars = stored, []
         else:
             candidates, calendars = match_window(
                 window,
@@ -790,7 +799,7 @@ def main() -> int:
                 lookback=timedelta(hours=args.lookback_hours),
                 lookahead=timedelta(hours=args.lookahead_hours),
             )
-        metadata_block = render_metadata(window, candidates, calendars)
+        metadata_block = render_metadata(window, candidates, calendars, chosen_by_hand=chosen_by_hand)
     except GwsError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -810,10 +819,11 @@ def main() -> int:
         best = candidates[0]
         print(
             f"Annotated {transcript_path.name} with {best.event.get('summary') or '(untitled)'} "
-            f"[{confidence_label(best.score)} confidence]"
+            f"[{'chosen by hand' if chosen_by_hand else confidence_label(best.score) + ' confidence'}]"
         )
     else:
-        print(f"Annotated {transcript_path.name} with 'no plausible match found'")
+        found = "no event (chosen by hand)" if chosen_by_hand else "'no plausible match found'"
+        print(f"Annotated {transcript_path.name} with {found}")
     return 0
 
 

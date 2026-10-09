@@ -13,7 +13,10 @@ widgets, phone apps) live under `frontends/` or in separate repos.
 2. **Guess the context** — as soon as recording stops, works out what the
    meeting *was*: the spoken language (sampled from the audio), the matching
    Google Calendar event, and which project/customer note it belongs to.
-3. **Verify** — you confirm or correct language and customer in the TUI.
+3. **Verify** — you confirm or correct language, calendar event and customer in
+   the TUI. The event matters beyond the title: only its invitees can be named
+   as speakers, so an overlapping meeting guessed instead puts the wrong people
+   in the transcript (`e` picks another candidate, or none of them).
    Nothing expensive runs before this, and the answers are then used as
    *inputs* by the stages below rather than guessed again by each of them.
 4. **Transcribe + diarize** — runs Whisper (or a fine-tuned variant) in the
