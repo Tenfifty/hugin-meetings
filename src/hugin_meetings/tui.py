@@ -36,6 +36,7 @@ class AudioTui:
         self.summary_model = summary_model
         self.customer_model = customer_model
         self.recordings = audio_pipeline.scan_recordings()
+        self.overview: tuple[str, list[str]] | None = None
         self.selected = 0
         self.message = ""
         self.log_lines: list[str] = []
@@ -44,6 +45,7 @@ class AudioTui:
 
     def refresh(self) -> None:
         self.recordings = audio_pipeline.scan_recordings()
+        self.overview = None
         if self.recordings:
             self.selected = min(self.selected, len(self.recordings) - 1)
         else:
@@ -110,10 +112,15 @@ class AudioTui:
                         self.open_recording(stdscr, rec)
                     self.refresh()
 
-    def draw_main(self, stdscr) -> None:
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
+    def overview_lines(self) -> tuple[str, list[str]]:
+        """The header, and one line per meeting without the selection marker.
 
+        Building them reads summaries and resolves customer notes, which is
+        far too slow to repeat on every arrow key. They only change when the
+        list is rescanned, so they are built once per scan.
+        """
+        if self.overview is not None:
+            return self.overview
         unverified = sum(1 for rec in self.recordings if rec.needs_verification)
         unprocessed = sum(1 for rec in self.recordings if rec.ready_for_pipeline)
         interrupted = sum(1 for rec in self.recordings if rec.recording_state == "interrupted")
@@ -122,6 +129,26 @@ class AudioTui:
             f"to verify: {unverified}  verified, not processed: {unprocessed}"
             + (f"  INTERRUPTED: {interrupted}" if interrupted else "")
         )
+        rows = []
+        for rec in self.recordings:
+            enroll = f" anon:{len(rec.anonymous_speakers)}" if rec.anonymous_speakers else ""
+            customer_label = self.customer_label(rec)
+            part_label = f"p{rec.raw_part_count}" if rec.raw_part_count else "--"
+            recording = f"[{rec.recording_state}] " if rec.recording_state else ""
+            rows.append(
+                f"{rec.timestamp}  {part_label:>3}  {rec.short_status}  "
+                f"{rec.pipeline_steps_complete}/{rec.pipeline_total_steps}  "
+                f"{self.language_label(rec):<4}"
+                f"{customer_label[:22].ljust(22)}  {recording}{rec.title}{enroll}"
+            )
+        self.overview = (header, rows)
+        return self.overview
+
+    def draw_main(self, stdscr) -> None:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+
+        header, rows = self.overview_lines()
         stdscr.addstr(0, 0, header[: w - 1], curses.A_BOLD)
 
         info = "Enter: open/verify  a: accept + process  d: delete entry  r: refresh  q: quit"
@@ -129,27 +156,18 @@ class AudioTui:
 
         table_top = 3
         table_height = max(5, h - 10)
-        visible = self.recordings[:table_height]
-        if self.selected >= table_height and self.recordings:
+        visible = rows[:table_height]
+        if self.selected >= table_height and rows:
             start = self.selected - table_height + 1
-            visible = self.recordings[start : start + table_height]
+            visible = rows[start : start + table_height]
         else:
             start = 0
 
-        for idx, rec in enumerate(visible):
+        for idx, row in enumerate(visible):
             y = table_top + idx
             actual_index = start + idx
             selector = ">" if actual_index == self.selected else " "
-            enroll = f" anon:{len(rec.anonymous_speakers)}" if rec.anonymous_speakers else ""
-            customer_label = self.customer_label(rec)
-            part_label = f"p{rec.raw_part_count}" if rec.raw_part_count else "--"
-            recording = f"[{rec.recording_state}] " if rec.recording_state else ""
-            line = (
-                f"{selector} {rec.timestamp}  {part_label:>3}  {rec.short_status}  "
-                f"{rec.pipeline_steps_complete}/{rec.pipeline_total_steps}  "
-                f"{self.language_label(rec):<4}"
-                f"{customer_label[:22].ljust(22)}  {recording}{rec.title}{enroll}"
-            )
+            line = f"{selector} {row}"
             attr = curses.color_pair(1) | curses.A_BOLD if actual_index == self.selected else curses.A_NORMAL
             stdscr.addstr(y, 0, line[: w - 1], attr)
 

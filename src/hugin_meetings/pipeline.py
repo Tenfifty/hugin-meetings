@@ -690,21 +690,23 @@ def summary_excerpt(path: Path, max_len: int = 120) -> str:
     return ""
 
 
-def list_customer_notes() -> list[CustomerNote]:
+def _customer_note_paths() -> list[tuple[Path, bool]]:
     """Project notes: files directly in CUSTOMERS_DIR or in one of its inactive dirs.
 
     Any other subdirectory holds material for a project (`AKA/`, `Notana Care/`),
-    not projects of its own, so it is not a match candidate.
+    not projects of its own, so it is not a match candidate. Returns each path
+    with whether it is active.
     """
+    paths = list(CUSTOMERS_DIR.glob("*.md"))
+    for name in INACTIVE_DIR_NAMES:
+        paths.extend((CUSTOMERS_DIR / name).glob("*.md"))
+    return [(path, path.parent == CUSTOMERS_DIR) for path in sorted(paths)]
+
+
+def list_customer_notes() -> list[CustomerNote]:
+    """The project notes with a preview of each, for the matcher prompt."""
     notes: list[CustomerNote] = []
-    for path in sorted(CUSTOMERS_DIR.rglob("*.md")):
-        parts = path.relative_to(CUSTOMERS_DIR).parts
-        if len(parts) == 1:
-            is_active = True
-        elif len(parts) == 2 and parts[0] in INACTIVE_DIR_NAMES:
-            is_active = False
-        else:
-            continue
+    for path, is_active in _customer_note_paths():
         name = path.stem
         text = path.read_text()
         preview = re.sub(r"\s+", " ", text).strip()[:MAX_CANDIDATE_PREVIEW]
@@ -912,9 +914,11 @@ def resolve_customer_path(name: str | None, candidates: list[CustomerNote]) -> P
         if note.name.lower() == name.lower():
             return note.path
 
-    for note in list_customer_notes():
-        if note.name.lower() == name.lower():
-            return note.path
+    # By filename only: reading every note for its preview made each lookup
+    # cost tens of milliseconds, and stale stored paths look up on every load.
+    for path, _ in _customer_note_paths():
+        if path.stem.lower() == name.lower():
+            return path
 
     return None
 
