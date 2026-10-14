@@ -143,6 +143,12 @@ def build_ffmpeg_recording_command(
 ) -> list[str]:
     return [
         ffmpeg_bin,
+        # Its output goes to the recorder log. The banner and the progress
+        # line (rewritten with \r every half second) were 99% of that log and
+        # glued the recorder's own lines onto theirs; input, stream mapping
+        # and warnings stay.
+        "-hide_banner",
+        "-nostats",
         "-y",
         "-f",
         input_format,

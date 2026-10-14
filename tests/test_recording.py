@@ -20,6 +20,15 @@ def test_a_part_is_written_outside_the_archive() -> None:
     assert path == recording.RECORDING_DIR / "sys-20260424-101112-p03.opus"
 
 
+def test_ffmpeg_keeps_its_banner_and_progress_out_of_the_log(tmp_path) -> None:
+    command = recording.build_ffmpeg_recording_command(
+        source="mic-source", output_path=tmp_path / "out.opus"
+    )
+    assert {"-hide_banner", "-nostats"} <= set(command)
+    assert "-loglevel" not in command
+    assert command[-1] == str(tmp_path / "out.opus")
+
+
 def test_a_stopped_part_moves_into_the_archive(tmp_path) -> None:
     track = make_track(tmp_path)
 
