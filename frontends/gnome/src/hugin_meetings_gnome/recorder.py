@@ -39,6 +39,7 @@ SEGMENT_MINUTES = recording.DEFAULT_SEGMENT_MINUTES
 PENDING_REFRESH_SECONDS = 10
 REMINDER_CHECK_SECONDS = 30
 DEVICE_CHECK_SECONDS = 2
+JOURNAL_SETTLE_MS = 1000
 LOG_PATH = recording.DEFAULT_RECORDER_LOG_PATH
 TERMINAL_CANDIDATES = [
     ["gnome-terminal", "--geometry=120x40", "--", USER_SHELL, "-lic"],
@@ -77,6 +78,7 @@ class AudioRecorder:
         self._reset_reminder_state_for_today(persist=False)
         self.prompt_open = False
         self.journal_monitor = None
+        self.journal_reload_timer = None
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "hugin-recorder",
@@ -115,13 +117,13 @@ class AudioRecorder:
             self.scheduled_meetings = meeting_schedule.load_todays_journal_meetings(
                 JOURNAL_PATH, self.today
             )
+            # The recording's meeting is left alone even when it is missing
+            # from what was just read. A journal caught mid-write reads as
+            # empty, and dropping the association then cost every recording
+            # its meeting once the start grace had passed (2026-10-14). A key
+            # missing from the index already reads as "no meeting" to the stop
+            # reminder, and the association is cleared when the recording stops.
             self.meeting_index = {meeting.key: meeting for meeting in self.scheduled_meetings}
-            if (
-                self.reminder_state.get("recording_meeting_key")
-                and self.reminder_state["recording_meeting_key"] not in self.meeting_index
-            ):
-                self.reminder_state["recording_meeting_key"] = None
-                self._save_reminder_state()
             logging.info("Loaded %d journal meetings for %s", len(self.scheduled_meetings), self.today)
         except Exception:
             logging.exception("Failed to reload journal meetings")
@@ -134,7 +136,18 @@ class AudioRecorder:
         self.journal_monitor.connect("changed", self._on_journal_changed)
 
     def _on_journal_changed(self, *_args):
+        # One save arrives as several events, the first often while the file
+        # is still truncated. Read it once, after the writes have settled.
+        if self.journal_reload_timer:
+            GLib.source_remove(self.journal_reload_timer)
+        self.journal_reload_timer = GLib.timeout_add(
+            JOURNAL_SETTLE_MS, self._reload_journal_after_settle
+        )
+
+    def _reload_journal_after_settle(self):
+        self.journal_reload_timer = None
         self._reload_journal_meetings()
+        return False
 
     def _set_recording_meeting(self, meeting_key):
         self.reminder_state = meeting_schedule.set_recording_meeting(
