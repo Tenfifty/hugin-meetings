@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -178,16 +179,42 @@ def record_applied(ts: str, **fields: Any) -> MeetingContext | None:
     return context
 
 
-def _guess_calendar(session: pipeline.RawAudioSession) -> tuple[dict[str, Any] | None, str]:
+def _guess_calendar(
+    session: pipeline.RawAudioSession, *, network_wait: float = 0.0
+) -> tuple[dict[str, Any] | None, str]:
+    """The calendar candidates for a session, or None and why not.
+
+    ``network_wait`` is how many seconds to keep retrying while gws cannot
+    reach Google. A recording is usually stopped just before the lid closes,
+    so the guess the recorder starts runs into a network that is going down:
+    on 2026-10-15 it failed on DNS seven seconds after the stop, and the
+    session had no calendar until someone asked again by hand. ``time.sleep``
+    does not count suspended time, so the budget is time spent awake.
+    """
     from . import calendar_match
 
-    try:
-        window = calendar_match.session_window(session)
-        candidates, _ = calendar_match.match_window(window)
-    except calendar_match.GwsError as exc:
-        return None, f"calendar lookup failed: {exc}"
-    except FileNotFoundError:
-        return None, "gws not found on PATH"
+    waited = 0.0
+    delay = 5.0
+    while True:
+        try:
+            window = calendar_match.session_window(session)
+            candidates, _ = calendar_match.match_window(window)
+            break
+        except calendar_match.GwsOfflineError as exc:
+            if waited + delay > network_wait:
+                return None, f"calendar lookup failed: {exc}"
+            print(
+                f"{session.session_id}: calendar unreachable, retrying in {delay:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(delay)
+            waited += delay
+            delay = min(delay * 2, 60.0)
+        except calendar_match.GwsError as exc:
+            return None, f"calendar lookup failed: {exc}"
+        except FileNotFoundError:
+            return None, "gws not found on PATH"
     if not candidates:
         return None, "no plausible calendar event"
     # Keep the alternatives too: they are what the metadata block lists, and
@@ -297,6 +324,7 @@ def build_context(
     model: str | None = None,
     skip_calendar: bool = False,
     skip_customer: bool = False,
+    network_wait: float = 0.0,
 ) -> MeetingContext:
     """Guess everything the later stages need. Never interactive, never fatal.
 
@@ -310,7 +338,7 @@ def build_context(
     context.language = result.to_dict()
 
     if not skip_calendar:
-        context.calendar, context.note = _guess_calendar(session)
+        context.calendar, context.note = _guess_calendar(session, network_wait=network_wait)
 
     # No event means no domains, no title and no description — the matcher would
     # be guessing from nothing, so leave the customer for the operator instead.
@@ -342,6 +370,13 @@ def main() -> int:
     parser.add_argument("--model", help=f"Matcher model (default: {pipeline.DEFAULT_CUSTOMER_MODEL})")
     parser.add_argument("--no-calendar", action="store_true", help="Skip the calendar lookup")
     parser.add_argument("--no-customer", action="store_true", help="Skip the customer guess")
+    parser.add_argument(
+        "--wait-for-network",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Keep retrying a calendar lookup that cannot reach Google this long (default: 0)",
+    )
     parser.add_argument("--json", action="store_true", help="Print the full context objects")
     args = parser.parse_args()
 
@@ -361,6 +396,7 @@ def main() -> int:
                 model=args.model,
                 skip_calendar=args.no_calendar,
                 skip_customer=args.no_customer,
+                network_wait=args.wait_for_network,
             )
             save_context(context)
         contexts.append(context)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -185,6 +186,30 @@ class ResponseStatusTests(unittest.TestCase):
         candidates = calendar_match.dedupe_candidates([worse_response, better_response])
 
         self.assertEqual(candidates, [better_response])
+
+
+class GwsErrorTests(unittest.TestCase):
+    # What gws printed on 2026-10-15, seven seconds after the lid closed.
+    OFFLINE = (
+        "Authentication failed: Failed to get token: Connection failure: Hyper error: "
+        "client error (Connect): dns error: failed to lookup address information"
+    )
+
+    def run_gws_failing_with(self, stderr: str) -> None:
+        failed = subprocess.CompletedProcess(["gws"], 1, stdout="", stderr=stderr)
+        with patch.object(calendar_match.shutil, "which", return_value="/usr/bin/gws"), patch.object(
+            calendar_match.subprocess, "run", return_value=failed
+        ):
+            calendar_match.run_gws("calendar", "calendarList", "list")
+
+    def test_no_network_is_told_apart_so_it_can_be_retried(self) -> None:
+        with self.assertRaises(calendar_match.GwsOfflineError):
+            self.run_gws_failing_with(self.OFFLINE)
+
+    def test_a_refusal_is_not_mistaken_for_no_network(self) -> None:
+        with self.assertRaises(calendar_match.GwsError) as caught:
+            self.run_gws_failing_with("Authentication failed: invalid_grant")
+        self.assertNotIsInstance(caught.exception, calendar_match.GwsOfflineError)
 
 
 if __name__ == "__main__":

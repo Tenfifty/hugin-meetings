@@ -93,6 +93,17 @@ class GwsError(RuntimeError):
     pass
 
 
+class GwsOfflineError(GwsError):
+    """gws never reached Google: no network, not a refusal. Worth retrying."""
+
+
+# How gws (reqwest/hyper) words a request that never got an answer. An auth
+# refusal such as invalid_grant does not match, and retrying it would not help.
+OFFLINE_ERROR_RE = re.compile(
+    r"connection failure|dns error|client error \(connect\)|timed out", re.IGNORECASE
+)
+
+
 def resolve_transcript(name: str | None) -> Path:
     return resolve_transcript_md(TRANSCRIPT_DIR, name).resolve()
 
@@ -279,7 +290,10 @@ def run_gws(*args: str) -> dict[str, Any]:
         message = result.stderr.strip()
         if isinstance(payload, dict) and "error" in payload:
             message = payload["error"].get("message", message) or message
-        raise GwsError(message or f"{gws_bin} {' '.join(args)} failed")
+        message = message or f"{gws_bin} {' '.join(args)} failed"
+        if OFFLINE_ERROR_RE.search(message):
+            raise GwsOfflineError(message)
+        raise GwsError(message)
 
     if not isinstance(payload, dict):
         raise GwsError(f"Unexpected {gws_bin} output for {' '.join(args)}")

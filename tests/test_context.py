@@ -1,16 +1,34 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from hugin_meetings import calendar_match
 from hugin_meetings import context as meeting_context
+
+
+def make_candidate(summary: str, response_status: str, score: float) -> calendar_match.Candidate:
+    return calendar_match.Candidate(
+        calendar_id="primary",
+        calendar_name="Me",
+        event={"summary": summary},
+        event_start=datetime(2026, 10, 15, 8, tzinfo=timezone.utc),
+        event_end=datetime(2026, 10, 15, 8, 45, tzinfo=timezone.utc),
+        response_status=response_status,
+        score=score,
+        reasons=[],
+    )
 
 
 class ContextRoundTripTests(unittest.TestCase):
@@ -181,6 +199,61 @@ def _candidate(event_id: str, summary: str, score: float, attendees: list[str]) 
         "score": score,
         "reasons": [],
     }
+
+
+class CalendarGuessTests(unittest.TestCase):
+    """The guess a recorder starts as the lid closes must outlast the network gap."""
+
+    SESSION = SimpleNamespace(session_id="20261015-100253")
+    CANDIDATE = make_candidate("AKA - Produktutvecklingsmöte", "accepted", 138.4)
+
+    def guess(self, outcomes, network_wait):
+        window = calendar_match.MatchWindow(
+            self.CANDIDATE.event_start, self.CANDIDATE.event_end, timedelta(minutes=35)
+        )
+        with patch.object(calendar_match, "session_window", return_value=window), patch.object(
+            calendar_match, "match_window", side_effect=outcomes
+        ) as match, patch.object(meeting_context.time, "sleep") as sleep, redirect_stderr(
+            io.StringIO()
+        ):
+            result = meeting_context._guess_calendar(self.SESSION, network_wait=network_wait)
+        return result, match.call_count, [call.args[0] for call in sleep.call_args_list]
+
+    def test_an_offline_lookup_is_retried_until_the_network_is_back(self) -> None:
+        offline = calendar_match.GwsOfflineError("dns error")
+        (calendar, note), calls, sleeps = self.guess(
+            [offline, offline, ([self.CANDIDATE], [])], network_wait=300
+        )
+
+        self.assertEqual(note, "")
+        self.assertEqual(calendar["candidates"][0]["event"]["summary"], "AKA - Produktutvecklingsmöte")
+        self.assertEqual(calls, 3)
+        self.assertEqual(sleeps, [5.0, 10.0])
+
+    def test_it_gives_up_once_the_wait_is_spent(self) -> None:
+        offline = calendar_match.GwsOfflineError("dns error")
+        (calendar, note), calls, sleeps = self.guess([offline] * 10, network_wait=60)
+
+        self.assertIsNone(calendar)
+        self.assertEqual(note, "calendar lookup failed: dns error")
+        self.assertEqual(sleeps, [5.0, 10.0, 20.0])
+        self.assertEqual(calls, 4)
+
+    def test_without_a_wait_it_answers_at_once(self) -> None:
+        (calendar, note), calls, sleeps = self.guess(
+            [calendar_match.GwsOfflineError("dns error")], network_wait=0
+        )
+
+        self.assertIsNone(calendar)
+        self.assertEqual((calls, sleeps), (1, []))
+
+    def test_a_refusal_is_not_retried(self) -> None:
+        (calendar, note), calls, sleeps = self.guess(
+            [calendar_match.GwsError("invalid_grant")], network_wait=300
+        )
+
+        self.assertEqual(note, "calendar lookup failed: invalid_grant")
+        self.assertEqual((calls, sleeps), (1, []))
 
 
 class EventChoiceTests(unittest.TestCase):

@@ -82,6 +82,11 @@ def leftover_parts(recording_dir: Path) -> list[Path]:
     return sorted(recording_dir.glob("*.opus")) if recording_dir.exists() else []
 
 
+# A session usually ends just before the lid closes; give the calendar lookup
+# time for the network to come back instead of leaving the session without one.
+CONTEXT_NETWORK_WAIT_SECONDS = 300
+
+
 def start_context_guess(session_id: str, audio_dir: Path = RAW_AUDIO_DIR):
     """Guess language, calendar event and customer as soon as a session ends.
 
@@ -112,7 +117,12 @@ def start_context_guess(session_id: str, audio_dir: Path = RAW_AUDIO_DIR):
 
     try:
         return subprocess.Popen(
-            [resolve_sibling_bin("hugin-meet-context"), session_id],
+            [
+                resolve_sibling_bin("hugin-meet-context"),
+                session_id,
+                "--wait-for-network",
+                str(CONTEXT_NETWORK_WAIT_SECONDS),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log_file,
             stderr=subprocess.STDOUT,
