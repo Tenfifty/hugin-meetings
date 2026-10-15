@@ -188,6 +188,61 @@ class ResponseStatusTests(unittest.TestCase):
         self.assertEqual(candidates, [better_response])
 
 
+class ExternalAttendeeTests(unittest.TestCase):
+    ME = {"email": "david.fendrich@tenfifty.io", "self": True, "responseStatus": "accepted"}
+    ROOM = {"email": "c_188da@resource.calendar.google.com", "resource": True}
+    # 2026-10-15: the room booked for a customer meeting scored 2 points higher
+    # than the meeting itself, for having a location.
+    ROOM_BOOKING = {
+        "summary": "Rumsbokning, AKA",
+        "organizer": {"email": "david.fendrich@tenfifty.io", "self": True},
+        "attendees": [ROOM, ME, {"email": "filip.wikman@tenfifty.io"}],
+    }
+    CUSTOMER_MEETING = {
+        "summary": "AKA - Produktutvecklingsmöte",
+        "organizer": {"email": "benjamin.kevin.samuelsson@gmail.com"},
+        "attendees": [
+            ME,
+            {"email": "filip.wikman@tenfifty.io"},
+            {"email": "par.h.blixt@gmail.com"},
+            {"email": "kristian@samuelsson.cc"},
+        ],
+    }
+
+    def candidate(self, event, score, response_status="accepted"):
+        candidate = make_candidate(event["summary"], response_status, score)
+        candidate.event = event
+        return candidate
+
+    def test_colleagues_and_rooms_are_not_external(self) -> None:
+        self.assertEqual(calendar_match.external_attendees(self.ROOM_BOOKING, "primary"), [])
+        self.assertEqual(
+            calendar_match.external_attendees(self.CUSTOMER_MEETING, "primary"),
+            ["par.h.blixt@gmail.com", "kristian@samuelsson.cc"],
+        )
+
+    def test_a_primary_calendar_id_gives_the_own_domain_when_no_entry_is_marked(self) -> None:
+        event = {"attendees": [{"email": "a@tenfifty.io"}, {"email": "b@aka.se"}]}
+        self.assertEqual(
+            calendar_match.external_attendees(event, "david.fendrich@tenfifty.io"), ["b@aka.se"]
+        )
+        self.assertEqual(
+            calendar_match.external_attendees(event, "team@group.calendar.google.com"), []
+        )
+
+    def test_an_external_meeting_outranks_a_better_scoring_internal_one(self) -> None:
+        room = self.candidate(self.ROOM_BOOKING, 140.4)
+        meeting = self.candidate(self.CUSTOMER_MEETING, 138.4)
+
+        self.assertEqual(calendar_match.dedupe_candidates([room, meeting]), [meeting, room])
+
+    def test_the_answer_to_the_invitation_still_comes_first(self) -> None:
+        room = self.candidate(self.ROOM_BOOKING, 140.4)
+        declined = self.candidate(self.CUSTOMER_MEETING, 138.4, response_status="declined")
+
+        self.assertEqual(calendar_match.dedupe_candidates([declined, room]), [room, declined])
+
+
 class GwsErrorTests(unittest.TestCase):
     # What gws printed on 2026-10-15, seven seconds after the lid closed.
     OFFLINE = (

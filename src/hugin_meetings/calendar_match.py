@@ -38,6 +38,7 @@ DEFAULT_LOOKAHEAD = timedelta(hours=6)
 MAX_DESCRIPTION_LEN = 240
 MAX_ATTENDEES = 8
 MIN_OVERLAP_FRACTION = 0.5
+RESOURCE_CALENDAR_DOMAIN = "resource.calendar.google.com"
 NOISY_VIRTUAL_LOCATIONS = {
     "microsoft teams-möte",
     "microsoft teams meeting",
@@ -87,6 +88,10 @@ class Candidate:
     response_status: str
     score: float
     reasons: list[str]
+
+    @property
+    def external_attendees(self) -> list[str]:
+        return external_attendees(self.event, self.calendar_id)
 
 
 class GwsError(RuntimeError):
@@ -442,6 +447,43 @@ def response_label(status: str) -> str:
     return RESPONSE_STATUS_LABEL.get(status, status or "not answered")
 
 
+def mail_domain(email: str) -> str:
+    return email.rpartition("@")[2].lower() if "@" in email else ""
+
+
+def own_mail_domain(event: dict[str, Any], calendar_id: str) -> str:
+    """The user's own mail domain, as the event says it: Google marks the
+    user's own attendee, organizer and creator entries with ``self``."""
+    people = [
+        *(event.get("attendees") or []),
+        event.get("organizer") or {},
+        event.get("creator") or {},
+    ]
+    for person in people:
+        if person.get("self") and mail_domain(person.get("email", "")):
+            return mail_domain(person["email"])
+    # A primary calendar's id is the user's address; a group calendar's is not.
+    if calendar_id.endswith(".calendar.google.com"):
+        return ""
+    return mail_domain(calendar_id)
+
+
+def external_attendees(event: dict[str, Any], calendar_id: str) -> list[str]:
+    """Invitees from outside the user's own mail domain. Rooms are not people.
+
+    Without a known own domain nobody can be called external, so none are.
+    """
+    own = own_mail_domain(event, calendar_id)
+    if not own:
+        return []
+    return [
+        attendee["email"]
+        for attendee in event.get("attendees") or []
+        if not attendee.get("resource")
+        and mail_domain(attendee.get("email", "")) not in ("", own, RESOURCE_CALENDAR_DOMAIN)
+    ]
+
+
 def tokenize(text: str) -> set[str]:
     return {
         token
@@ -509,6 +551,9 @@ def score_event(
     if attendees:
         score += 4.0
         reasons.append(f"{len(attendees)} attendee(s)")
+    external = external_attendees(event, calendar["id"])
+    if external:
+        reasons.append(f"{len(external)} external")
 
     if event.get("hangoutLink") or event.get("conferenceData"):
         score += 4.0
@@ -536,8 +581,16 @@ def score_event(
     )
 
 
-def candidate_sort_key(candidate: Candidate) -> tuple[int, float]:
-    return (response_priority(candidate.response_status), candidate.score)
+def candidate_sort_key(candidate: Candidate) -> tuple[int, bool, float]:
+    # After the user's own answer, a meeting with people from outside beats one
+    # with colleagues only, whatever the score. Of two overlapping meetings the
+    # external one is usually the one attended, and the room booked for a
+    # meeting is itself a colleagues-only event that scores just as well.
+    return (
+        response_priority(candidate.response_status),
+        bool(candidate.external_attendees),
+        candidate.score,
+    )
 
 
 def dedupe_candidates(candidates: list[Candidate]) -> list[Candidate]:
