@@ -481,21 +481,35 @@ class AudioRecorder:
             "GTK_IM_MODULE_FILE",
             "GTK_PATH",
             "LOCPATH",
+            # Name the terminal tab the tray was started from. gnome-terminal
+            # opens the new window relative to it and fails outright once that
+            # tab is closed (2026-10-15).
+            "GNOME_TERMINAL_SCREEN",
+            "GNOME_TERMINAL_SERVICE",
         ):
             env.pop(var, None)
 
         for terminal_cmd in TERMINAL_CANDIDATES:
             try:
-                subprocess.Popen(
-                    [*terminal_cmd, command],
-                    env=env,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    stdin=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
+                with LOG_PATH.open("ab") as log_file:
+                    process = subprocess.Popen(
+                        [*terminal_cmd, command],
+                        env=env,
+                        stdout=subprocess.DEVNULL,
+                        stderr=log_file,
+                        stdin=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
                 logging.info("Launched audio-tui via %s", terminal_cmd[0])
                 self.status_item.set_label("Opened Audio TUI")
+                # gnome-terminal only hands the request to its server and
+                # exits; a window that never opened shows up as its exit code.
+                GLib.child_watch_add(
+                    GLib.PRIORITY_DEFAULT,
+                    process.pid,
+                    self._on_terminal_exited,
+                    (terminal_cmd[0], process),
+                )
                 return
             except FileNotFoundError:
                 continue
@@ -506,6 +520,18 @@ class AudioRecorder:
 
         logging.error("No terminal emulator found for audio-tui launch")
         self.status_item.set_label("No terminal found for Audio TUI")
+
+    def _on_terminal_exited(self, _pid, wait_status, launch):
+        # The Popen rides along only so it is not collected, and reaped behind
+        # GLib's back, before this watch has seen the exit.
+        terminal, _process = launch
+        try:
+            GLib.spawn_check_wait_status(wait_status)
+        except GLib.Error as exc:
+            logging.error(
+                "%s failed to open Audio TUI (%s); its stderr is above", terminal, exc.message
+            )
+            self.status_item.set_label("Failed to open Audio TUI")
 
     def _on_quit(self, _):
         self._stop_recording()
