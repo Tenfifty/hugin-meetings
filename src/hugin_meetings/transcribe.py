@@ -224,9 +224,45 @@ def _cuda_memory_stats() -> str:
         return f"cuda_stats_unavailable={exc}"
 
 
+def _gpu_processes() -> list[str]:
+    """Every process holding GPU memory, largest first, graphics ones included.
+
+    Free memory alone cannot say who took the card. On 2026-10-26 ASR ran out
+    with about 1 GB more in use than at noon, held by something that had let
+    go two minutes later and could not be named afterwards. ``-q`` prints the
+    full command line, where the process table truncates it.
+    """
+    try:
+        report = subprocess.run(
+            ["nvidia-smi", "-q", "-d", "PIDS"],
+            capture_output=True, text=True, timeout=10, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [f"gpu_processes_unavailable={exc}"]
+    processes = []
+    for line in report.splitlines():
+        key, _, value = (part.strip() for part in line.partition(":"))
+        if key == "Process ID":
+            processes.append({"pid": value})
+        elif processes and key in ("Type", "Name", "Used GPU Memory"):
+            processes[-1][key] = value
+
+    def used_mib(process: dict) -> int:
+        amount = process.get("Used GPU Memory", "").removesuffix("MiB").strip()
+        return int(amount) if amount.isdigit() else -1
+
+    return [
+        f"gpu pid={p['pid']} type={p.get('Type', '?')} used_MiB={used_mib(p)} "
+        f"{(p.get('Name') or '?').split()[0]}"
+        for p in sorted(processes, key=used_mib, reverse=True)
+    ]
+
+
 def _log_oom(exc: BaseException, phase: str) -> None:
     # Log before detaching frames, including NeMo's internal failing stage.
     print(f"    OOM phase={phase} {_cuda_memory_stats()}", file=sys.stderr, flush=True)
+    for line in _gpu_processes():
+        print(f"      {line}", file=sys.stderr, flush=True)
     traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
     _release_oom_traceback(exc)
 
@@ -237,6 +273,36 @@ def _clear_model_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _release_vad_cache(model) -> None:
+    """Hand the VAD's torch cache back to the driver before Whisper decodes.
+
+    WhisperX runs pyannote's VAD in torch, then decodes in CTranslate2, which
+    allocates outside torch and cannot use torch's cached blocks. The VAD left
+    about 400 MiB reserved for the whole decode, and every batch retry reran it.
+    WhisperX dispatches on ``Vad`` subclasses, so the wrapper is one.
+    """
+    import torch
+    from whisperx.vads import Vad
+
+    class CacheReleasingVad(Vad):
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __call__(self, *args, **kwargs):
+            try:
+                return self.inner(*args, **kwargs)
+            finally:
+                torch.cuda.empty_cache()
+
+        def preprocess_audio(self, audio):
+            return self.inner.preprocess_audio(audio)
+
+        def merge_chunks(self, *args, **kwargs):
+            return self.inner.merge_chunks(*args, **kwargs)
+
+    model.vad_model = CacheReleasingVad(model.vad_model)
 
 
 def transcribe(
@@ -996,11 +1062,14 @@ def process_part(
 
     def _load_whisper(dev: str):
         with _trusted_model_load_context():
-            return whisperx.load_model(
+            model = whisperx.load_model(
                 MODEL, dev,
                 compute_type="float16" if dev == "cuda" else "int8",
                 language=language,
             )
+        if dev == "cuda":
+            _release_vad_cache(model)
+        return model
 
     def _with_results(results):
         return {channel: (path, results[channel]) for channel, (path, _) in tracks.items()}

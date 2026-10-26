@@ -26,12 +26,18 @@ def test_gpu_asr_starts_with_batch_four(monkeypatch):
     assert calls == [4]
 
 
+class FakeVadBase:
+    pass
+
+
 @pytest.fixture
 def runtime(monkeypatch):
     cuda = SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None, reset_peak_memory_stats=lambda: None)
     monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=cuda, OutOfMemoryError=MemoryError))
     monkeypatch.setitem(sys.modules, 'whisperx', SimpleNamespace(load_audio=lambda path: path))
+    monkeypatch.setitem(sys.modules, 'whisperx.vads', SimpleNamespace(Vad=FakeVadBase))
     monkeypatch.setattr(t, '_cuda_memory_stats', lambda: 'fake-memory')
+    monkeypatch.setattr(t, '_gpu_processes', lambda: ['gpu fake-process'])
 
 
 def test_asr_reuses_reduced_batch_across_tracks(runtime):
@@ -116,6 +122,7 @@ def test_part_releases_whisper_before_alignment_and_keeps_devices_independent(ru
     wx = sys.modules['whisperx']
     references, asr_calls, stages = [], [], []
     class Whisper:
+        vad_model = None
         def transcribe(self, audio, **kwargs):
             asr_calls.append(audio)
             return {'segments': [{'start': 0, 'end': 1, 'text': audio}]}
@@ -194,3 +201,68 @@ def test_release_oom_traceback_releases_models_in_exception_chain(runtime):
         assert exc.__traceback__ is None
         assert cause.__traceback__ is None
         assert references[0]() is None
+
+
+NVIDIA_SMI_PIDS = '''
+GPU 00000000:01:00.0
+    Processes
+        GPU instance ID                   : N/A
+        Compute instance ID               : N/A
+        Process ID                        : 3407
+            Type                          : G
+            Name                          : /usr/bin/gnome-shell
+            Used GPU Memory               : 391 MiB
+        Process ID                        : 15828
+            Type                          : G
+            Name                          : /opt/google/chrome/chrome --type=gpu-process --field-trial-handle=3,i,1:2
+            Used GPU Memory               : 1421 MiB
+        Process ID                        : 540173
+            Type                          : C
+            Name                          : /home/u/.venv/bin/python
+            Used GPU Memory               : N/A
+'''
+
+
+def test_gpu_processes_names_holders_largest_first(monkeypatch):
+    monkeypatch.setattr(t.subprocess, 'run', lambda *args, **kwargs: SimpleNamespace(stdout=NVIDIA_SMI_PIDS))
+    assert t._gpu_processes() == [
+        'gpu pid=15828 type=G used_MiB=1421 /opt/google/chrome/chrome',
+        'gpu pid=3407 type=G used_MiB=391 /usr/bin/gnome-shell',
+        'gpu pid=540173 type=C used_MiB=-1 /home/u/.venv/bin/python',
+    ]
+
+
+def test_gpu_processes_reports_missing_nvidia_smi(monkeypatch):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError('nvidia-smi')
+    monkeypatch.setattr(t.subprocess, 'run', missing)
+    assert t._gpu_processes() == ['gpu_processes_unavailable=nvidia-smi']
+
+
+def test_oom_log_lists_gpu_processes_before_traceback(runtime, capsys):
+    t._log_oom(RuntimeError('CUDA out of memory'), 'asr:mic')
+    stderr = capsys.readouterr().err
+    assert stderr.index('phase=asr:mic') < stderr.index('gpu fake-process') < stderr.index('RuntimeError')
+
+
+def test_vad_releases_torch_cache_before_whisper_decodes(runtime, monkeypatch):
+    events = []
+    class Pyannote(FakeVadBase):
+        def __call__(self, audio):
+            events.append('vad')
+            return 'segments'
+        @staticmethod
+        def preprocess_audio(audio):
+            return f'waveform:{audio}'
+        @staticmethod
+        def merge_chunks(segments, chunk_size, onset, offset):
+            return (segments, chunk_size, onset, offset)
+    monkeypatch.setattr(sys.modules['torch'].cuda, 'empty_cache', lambda: events.append('empty_cache'))
+    model = SimpleNamespace(vad_model=Pyannote())
+    t._release_vad_cache(model)
+    # WhisperX takes preprocess_audio and merge_chunks from the VAD only when it is a Vad.
+    assert isinstance(model.vad_model, FakeVadBase)
+    assert model.vad_model.preprocess_audio('audio') == 'waveform:audio'
+    assert model.vad_model.merge_chunks('segments', 30, onset=0.5, offset=0.363) == ('segments', 30, 0.5, 0.363)
+    assert model.vad_model({'waveform': None}) == 'segments'
+    assert events == ['vad', 'empty_cache']
