@@ -1,4 +1,9 @@
+import gc
+import importlib
+import importlib.abc
+import importlib.util
 import sys
+import types
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,8 +41,82 @@ def runtime(monkeypatch):
     monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=cuda, OutOfMemoryError=MemoryError))
     monkeypatch.setitem(sys.modules, 'whisperx', SimpleNamespace(load_audio=lambda path: path))
     monkeypatch.setitem(sys.modules, 'whisperx.vads', SimpleNamespace(Vad=FakeVadBase))
+    monkeypatch.setitem(sys.modules, 'whisperx.asr', SimpleNamespace())
     monkeypatch.setattr(t, '_cuda_memory_stats', lambda: 'fake-memory')
     monkeypatch.setattr(t, '_gpu_processes', lambda: ['gpu fake-process'])
+
+
+def test_oom_includes_nvml_assert_from_oom_report(runtime):
+    assert t._is_oom(RuntimeError(
+        'NVML_SUCCESS == DriverAPI::get()->nvmlInit_v2_() INTERNAL ASSERT FAILED at '
+        '"/pytorch/c10/cuda/CUDACachingAllocator.cpp":1098, please report a bug to PyTorch. '
+    ))
+    assert not t._is_oom(RuntimeError('NVML_SUCCESS == DriverAPI::get()->nvmlInit_v2_() failed'))
+
+
+def test_whisper_model_follows_language(monkeypatch):
+    monkeypatch.setattr(t, 'MODEL', 'large-v3')
+    monkeypatch.setattr(t, 'WHISPER_MODELS', dict(t.DEFAULT_WHISPER_MODELS))
+    assert t.whisper_model_for('sv') == 'KBLab/kb-whisper-large'
+    assert t.whisper_model_for('no') == 'large-v3'
+    assert t.whisper_model_for('en') == 'large-v3'
+
+
+def test_lazy_import_traceback_does_not_pin_whisper(runtime, monkeypatch):
+    """optuna keeps an optional backend's ImportError with its traceback.
+
+    Imported lazily inside the Whisper loader, the frames of that traceback
+    pinned the loader's frame and the model in it for the whole process.
+    """
+    pinned = []
+
+    class LazyAsr(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+        def find_spec(self, name, path=None, target=None):
+            return importlib.util.spec_from_loader(name, self) if name == 'whisperx.asr' else None
+
+        def create_module(self, spec):
+            return None
+
+        def exec_module(self, module):
+            try:
+                raise ImportError('redis')
+            except ImportError as exc:
+                pinned.append(exc)
+
+    wx = types.ModuleType('whisperx')
+    wx.__path__ = []
+    wx.load_audio = lambda path: path
+    monkeypatch.setitem(sys.modules, 'whisperx', wx)
+    monkeypatch.delitem(sys.modules, 'whisperx.asr')
+    monkeypatch.setattr(sys, 'meta_path', [LazyAsr(), *sys.meta_path])
+    references, loaded = [], []
+
+    class Whisper:
+        vad_model = None
+
+        def transcribe(self, audio, **kwargs):
+            return {'segments': [{'start': 0, 'end': 1, 'text': 'hej'}]}
+
+    def load(name, *args, **kwargs):
+        importlib.import_module('whisperx.asr')  # whisperx's own _lazy_import
+        model = Whisper()
+        references.append(weakref.ref(model))
+        loaded.append(name)
+        return model
+
+    def align(path, result, device, language):
+        gc.collect()
+        assert references[0]() is None
+        return result
+
+    wx.load_model = load
+    monkeypatch.setattr(t, '_activate_cuda_library_path', lambda: None)
+    monkeypatch.setattr(t, '_cleanup_pcm_wav', lambda path: None)
+    monkeypatch.setattr(t, 'load_alignment_model', lambda device, language: True)
+    monkeypatch.setattr(t, 'align_transcription', align)
+    t.process_part(Path('mic'), None, part_index=1, use_part_suffix=False, language='sv', do_diarize=False)
+    assert pinned
+    assert loaded == [t.whisper_model_for('sv')]
 
 
 def test_asr_reuses_reduced_batch_across_tracks(runtime):

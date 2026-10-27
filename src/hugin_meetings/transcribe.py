@@ -46,6 +46,26 @@ TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
 MODEL = load_config().whisper_model
 
+# ``whisper_model`` is the default for every language; these override it per
+# language. KB-Whisper (KBLab, the National Library of Sweden) is large-v3
+# fine-tuned on Swedish and roughly halves its word error rate there. Until
+# 2026-06-04 it ran for every language, whatever ``whisper_model`` said. The
+# fix made large-v3 the model for every language instead, Swedish included,
+# until 2026-10-27. Override or extend via
+# ``meetings.whisper_models: {<lang>: <model>}`` in config.
+DEFAULT_WHISPER_MODELS = {
+    "sv": "KBLab/kb-whisper-large",
+}
+WHISPER_MODELS = {
+    **DEFAULT_WHISPER_MODELS,
+    **(load_config().raw.get("meetings", {}).get("whisper_models") or {}),
+}
+
+
+def whisper_model_for(language: str) -> str:
+    return WHISPER_MODELS.get(language, MODEL)
+
+
 # whisperx ships built-in default wav2vec2 alignment models for a fixed set of
 # languages, but recent releases dropped several (incl. Swedish), turning a
 # missing default into a hard ``ValueError: No default align-model for
@@ -73,13 +93,23 @@ MIN_ID_WORDS = 4
 
 
 def _is_oom(exc: BaseException) -> bool:
-    """Detect CUDA OOM across the several exception types torch/cuBLAS raise."""
+    """Detect CUDA OOM across the several exception types torch/cuBLAS raise.
+
+    Torch writes its OOM message with NVML's list of GPU processes. When NVML
+    cannot initialize, as when a driver upgrade has replaced the userspace
+    libraries but not the loaded kernel module (until the next boot), the
+    allocator raises an internal assert from that report instead of
+    ``OutOfMemoryError``. On 2026-10-27 that killed a part that would have
+    finished on CPU.
+    """
     import torch
 
     if isinstance(exc, torch.OutOfMemoryError):
         return True
-    msg = str(exc).lower()
-    return isinstance(exc, RuntimeError) and "out of memory" in msg
+    msg = str(exc)
+    if not isinstance(exc, RuntimeError):
+        return False
+    return "out of memory" in msg.lower() or ("nvmlInit" in msg and "CUDACachingAllocator" in msg)
 
 
 def _release_oom_traceback(exc: BaseException) -> None:
@@ -1048,9 +1078,18 @@ def process_part(
 
     import torch
     import whisperx
+    # WhisperX imports its ASR module on first use, and through pyannote that
+    # pulls in optuna, which keeps the ImportError of an optional backend
+    # (redis) with its traceback. Imported from inside _load_whisper, the
+    # traceback's frames pinned that function's frame, and the Whisper model
+    # in it, for the rest of the process: 3.9 GB that Sortformer then lacked
+    # on an 84-minute part (2026-10-27). Imported here, the pinned frames hold
+    # no model.
+    import whisperx.asr  # noqa: F401
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     hf_token = get_hf_token() if do_diarize else None
+    model_name = whisper_model_for(language)
     tracks = {"mic": (mic_part, None)}
     if sys_part:
         if is_silent(sys_part):
@@ -1063,7 +1102,7 @@ def process_part(
     def _load_whisper(dev: str):
         with _trusted_model_load_context():
             model = whisperx.load_model(
-                MODEL, dev,
+                model_name, dev,
                 compute_type="float16" if dev == "cuda" else "int8",
                 language=language,
             )
@@ -1075,7 +1114,7 @@ def process_part(
         return {channel: (path, results[channel]) for channel, (path, _) in tracks.items()}
 
     batch_state = {}
-    print(f"  Loading ASR model: {MODEL} (language: {language})", flush=True)
+    print(f"  Loading ASR model: {model_name} (language: {language})", flush=True)
     try:
         results = _run_model_stage(
             "asr", tracks, device, _load_whisper,
@@ -1246,7 +1285,9 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
     out_md.write_text(format_transcript(session_entries, session_id))
     print(f"  Wrote {out_md}")
 
-    meeting_context.record_applied(session_id, language=language)
+    meeting_context.record_applied(
+        session_id, language=language, whisper_model=whisper_model_for(language),
+    )
 
 
 def find_unprocessed() -> list[str]:

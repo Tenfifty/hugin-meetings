@@ -14,8 +14,11 @@ meetings:
   # archive, in <archive_root>/hugin-meetings/raw (archive_root in hugin.yaml).
   state_dir: ~/.hugin_audio
 
-  # Whisper
+  # Whisper. whisper_model is the default; whisper_models overrides it per
+  # language (the verified context's), and Swedish defaults to KB-Whisper.
   whisper_model: large-v3
+  # whisper_models:
+  #   sv: KBLab/kb-whisper-large
   compute_type:  float16
 
   # Local llama.cpp summarization. Leave unset for auto (all layers on GPU
