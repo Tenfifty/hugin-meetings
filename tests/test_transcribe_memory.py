@@ -38,7 +38,7 @@ class FakeVadBase:
 @pytest.fixture
 def runtime(monkeypatch):
     cuda = SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None, reset_peak_memory_stats=lambda: None)
-    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=cuda, OutOfMemoryError=MemoryError))
+    monkeypatch.setitem(sys.modules, 'torch', SimpleNamespace(cuda=cuda, OutOfMemoryError=type('FakeCudaOOM', (RuntimeError,), {})))
     monkeypatch.setitem(sys.modules, 'whisperx', SimpleNamespace(load_audio=lambda path: path))
     monkeypatch.setitem(sys.modules, 'whisperx.vads', SimpleNamespace(Vad=FakeVadBase))
     monkeypatch.setitem(sys.modules, 'whisperx.asr', SimpleNamespace())
@@ -345,3 +345,53 @@ def test_vad_releases_torch_cache_before_whisper_decodes(runtime, monkeypatch):
     assert model.vad_model.merge_chunks('segments', 30, onset=0.5, offset=0.363) == ('segments', 30, 0.5, 0.363)
     assert model.vad_model({'waveform': None}) == 'segments'
     assert events == ['vad', 'empty_cache']
+
+
+@pytest.mark.parametrize("explicit_cause", [False, True])
+def test_oom_recognizes_wrapped_cuda_failure(runtime, explicit_cause):
+    try:
+        try:
+            raise sys.modules['torch'].OutOfMemoryError('CUDA out of memory')
+        except RuntimeError as cause:
+            if explicit_cause:
+                raise MemoryError('batch_size ( 32) is probably too large.') from cause
+            raise MemoryError('batch_size ( 32) is probably too large.')
+    except MemoryError as exc:
+        assert t._is_oom(exc)
+
+
+def test_oom_does_not_treat_plain_memory_error_as_cuda_failure(runtime):
+    assert not t._is_oom(MemoryError('host allocation failed'))
+    wrapper = ValueError('unrelated failure')
+    wrapper.__context__ = wrapper
+    assert not t._is_oom(wrapper)
+
+
+def test_wrapped_vad_oom_falls_back_and_releases_gpu_model(runtime):
+    references, calls = [], []
+
+    class Model:
+        def transcribe(self, audio, batch_size, language):
+            calls.append((self.device, batch_size))
+            if self.device == 'cuda':
+                try:
+                    raise sys.modules['torch'].OutOfMemoryError('CUDA out of memory')
+                except RuntimeError:
+                    raise MemoryError('batch_size ( 32) is probably too large.')
+            return {'segments': [{'text': 'recovered'}]}
+
+    def load(device):
+        if device == 'cpu':
+            assert references[0]() is None
+        model = Model()
+        model.device = device
+        references.append(weakref.ref(model))
+        return model
+
+    result = t._run_model_stage(
+        'asr', {'mic': (Path('mic'), None)}, 'cuda', load,
+        lambda path, previous, model, device: t.transcribe(path, model, device, 'sv'),
+    )
+    assert result['mic']['segments'] == [{'text': 'recovered'}]
+    assert calls == [('cuda', 4), ('cuda', 2), ('cuda', 1), ('cpu', 8)]
+    assert all(ref() is None for ref in references)

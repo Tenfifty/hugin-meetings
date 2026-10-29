@@ -104,12 +104,24 @@ def _is_oom(exc: BaseException) -> bool:
     """
     import torch
 
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-    msg = str(exc)
-    if not isinstance(exc, RuntimeError):
-        return False
-    return "out of memory" in msg.lower() or ("nvmlInit" in msg and "CUDACachingAllocator" in msg)
+    # Pyannote wraps CUDA OOM in a plain MemoryError about VAD batch size.
+    # Inspect the original exception, rather than treating every host-memory
+    # failure as a GPU OOM. Guard against cycles in library exception chains.
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, torch.OutOfMemoryError):
+            return True
+        if isinstance(current, RuntimeError):
+            msg = str(current)
+            if "out of memory" in msg.lower() or ("nvmlInit" in msg and "CUDACachingAllocator" in msg):
+                return True
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
+    return False
 
 
 def _release_oom_traceback(exc: BaseException) -> None:
