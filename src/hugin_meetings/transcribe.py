@@ -15,6 +15,7 @@ from contextlib import contextmanager
 import gc
 import json
 import os
+import re
 import site
 import subprocess
 import sys
@@ -341,6 +342,32 @@ def _release_vad_cache(model) -> None:
     model.vad_model = CacheReleasingVad(model.vad_model)
 
 
+# Whisper learned from subtitled video, and in silence it sometimes writes the
+# subtitlers' credits. 53 such segments in 18 sessions, all from 2026-08-18 to
+# 2026-10-20, while Swedish ran on large-v3; none in the sessions on
+# KB-Whisper before or after. English still runs on large-v3. Each was a
+# whole segment on its own. Real speech mentions the same words ("Textning
+# ska vara längre ...", "... så prenumererar man på det"), so only a segment
+# that is nothing but one of these goes.
+SUBTITLE_ARTIFACT_RE = re.compile(
+    r"(svensk)?textning\.nu"
+    r"|undertexter från amara\.org-gemenskapen"
+    r"|tack för att (du|ni) tittade på den här videon",
+    re.IGNORECASE,
+)
+
+
+def drop_subtitle_artifacts(result: dict) -> dict:
+    segments = result.get("segments", [])
+    kept = [
+        s for s in segments
+        if not SUBTITLE_ARTIFACT_RE.fullmatch(s.get("text", "").strip().rstrip(".!"))
+    ]
+    if len(kept) < len(segments):
+        print(f"    Dropped {len(segments) - len(kept)} subtitle artifact segment(s)")
+    return {**result, "segments": kept}
+
+
 def transcribe(
     audio_path: Path, model, device: str, language: str,
     *, batch_state: dict | None = None,
@@ -363,7 +390,7 @@ def transcribe(
             result = model.transcribe(audio, batch_size=batch_size, language=language)
             if device == "cuda":
                 batch_state["batch_size"] = batch_size
-            return result
+            return drop_subtitle_artifacts(result)
         except Exception as exc:
             if device != "cuda" or not _is_oom(exc) or batch_size == batches[-1]:
                 raise
