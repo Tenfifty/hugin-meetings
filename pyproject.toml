@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 transcribe = [
     "huggingface-hub",
+    # echo.py: WebRTC AEC3 for cancelling sys out of the mic.
+    "livekit>=1.2,<2",
     # 3.x: Sortformer + TitaNet (sortformer.py). NeMo 3 removed MSDD.
     "nemo_toolkit[asr]>=3,<4",
     # whisperx>=3.8 requires pyannote.audio>=4 (for the speaker-diarization

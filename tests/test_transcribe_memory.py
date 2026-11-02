@@ -214,6 +214,7 @@ def test_part_releases_whisper_before_alignment_and_keeps_devices_independent(ru
     monkeypatch.setattr(t, 'get_hf_token', lambda: None)
     monkeypatch.setattr(t, 'is_silent', lambda path: False)
     monkeypatch.setattr(t, '_cleanup_pcm_wav', lambda path: None)
+    monkeypatch.setattr(t, 'cancel_echo', lambda mic, sys_, out: None)
     def align(path, result, device, language):
         assert references[0]() is None
         assert asr_calls == ['mic', 'sys']

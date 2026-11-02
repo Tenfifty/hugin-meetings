@@ -488,6 +488,13 @@ def _ensure_pcm_wav(audio_path: Path) -> Path:
     return wav_path
 
 
+def cancel_echo(mic_part: Path, sys_part: Path, out_path: Path):
+    """The mic with sys cancelled out (see echo.py), or None without echo."""
+    from .echo import cancel_echo as _cancel_echo
+
+    return _cancel_echo(mic_part, sys_part, out_path)
+
+
 def _cleanup_pcm_wav(audio_path: Path | None) -> None:
     if audio_path is None:
         return
@@ -1111,6 +1118,19 @@ def process_part(
     else:
         print(f"  Part p{part_index:02d}: no matching sys file found")
 
+    # Everything after ASR (alignment, diarization, speaker naming) reads the
+    # mic from tracks, so the cancelled track replaces it for all of them.
+    aec_path = None
+    if "sys" in tracks:
+        candidate = WAV_CACHE_DIR / f"{mic_part.stem}.aec.wav"
+        report = cancel_echo(mic_part, sys_part, candidate)
+        if report is None:
+            print(f"  Part p{part_index:02d}: no echo of sys on the mic, transcribing it as recorded")
+        else:
+            aec_path = candidate
+            tracks["mic"] = (aec_path, None)
+            print(f"  Part p{part_index:02d}: cancelled sys out of the mic, {report.describe()}", flush=True)
+
     def _load_whisper(dev: str):
         with _trusted_model_load_context():
             model = whisperx.load_model(
@@ -1170,6 +1190,8 @@ def process_part(
         if diarizer_name == "sortformer":
             _cleanup_pcm_wav(mic_part)
             _cleanup_pcm_wav(sys_part)
+        # The cancelled mic is itself in the WAV cache, under its own stem.
+        _cleanup_pcm_wav(aec_path)
 
 
 def ensure_speaker_cache() -> None:

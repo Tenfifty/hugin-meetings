@@ -19,9 +19,11 @@ widgets, phone apps) live under `frontends/` or in separate repos.
    in the transcript (`e` picks another candidate, or none of them).
    Nothing expensive runs before this, and the answers are then used as
    *inputs* by the stages below rather than guessed again by each of them.
-4. **Transcribe + diarize** — runs Whisper (or a fine-tuned variant) in the
-   confirmed language, plus a speaker diarizer, and merges the outputs into a
-   unified transcript with the calendar metadata attached.
+4. **Transcribe + diarize** — cancels the system audio's echo out of the
+   mic (WebRTC AEC3, when a call went through the speakers), runs Whisper
+   (or a fine-tuned variant) in the confirmed language, plus a speaker
+   diarizer, and merges the outputs into a unified transcript with the
+   calendar metadata attached.
 5. **Summarize** — generates a structured meeting summary via a local
    LLM (llama.cpp) or a remote model through Codex, Claude Code, or Google
    Antigravity (`agy`).
