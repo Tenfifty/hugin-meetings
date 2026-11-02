@@ -265,18 +265,31 @@ class AudioRecorder:
         dialog.set_title(title)
         dialog.format_secondary_text(secondary)
         dialog.set_keep_above(True)
+        # The prompt pops up while David is typing elsewhere, and a stray
+        # keystroke answered it at random (Enter hit the default, a letter a
+        # mnemonic). It answers to the mouse only: it does not take focus, has
+        # no mnemonics or default, and swallows every key. The focus hints
+        # alone are not enough, since Wayland may ignore them.
+        dialog.set_accept_focus(False)
+        dialog.set_focus_on_map(False)
         dialog.add_buttons(
-            "_No", Gtk.ResponseType.NO,
-            "_Yes", Gtk.ResponseType.YES,
+            "No", Gtk.ResponseType.NO,
+            "Yes", Gtk.ResponseType.YES,
         )
-        dialog.set_default_response(Gtk.ResponseType.YES)
+        for response_id in (Gtk.ResponseType.NO, Gtk.ResponseType.YES):
+            dialog.get_widget_for_response(response_id).set_can_focus(False)
+        dialog.connect("key-press-event", lambda *_: True)
         # An unanswered dialog holds a nested main loop, which stalls every
         # other reminder behind it. A prompt that has gone stale answers itself.
         expiry = None
         if timeout_seconds:
-            expiry = GLib.timeout_add_seconds(
-                timeout_seconds, lambda: dialog.response(Gtk.ResponseType.NO) or False
-            )
+            def expire():
+                nonlocal expiry
+                expiry = None  # a source that has fired must not be removed again
+                dialog.response(Gtk.ResponseType.NO)
+                return False
+
+            expiry = GLib.timeout_add_seconds(timeout_seconds, expire)
         self.prompt_open = True
         try:
             response = dialog.run()
