@@ -342,29 +342,57 @@ def _release_vad_cache(model) -> None:
     model.vad_model = CacheReleasingVad(model.vad_model)
 
 
-# Whisper learned from subtitled video, and in silence it sometimes writes the
-# subtitlers' credits. 53 such segments in 18 sessions, all from 2026-08-18 to
-# 2026-10-20, while Swedish ran on large-v3; none in the sessions on
-# KB-Whisper before or after. English still runs on large-v3. Each was a
-# whole segment on its own. Real speech mentions the same words ("Textning
-# ska vara längre ...", "... så prenumererar man på det"), so only a segment
-# that is nothing but one of these goes.
-SUBTITLE_ARTIFACT_RE = re.compile(
+# Both models learned from subtitled video and leave its traces in near
+# silence, each its own kind:
+# - large-v3 writes the subtitlers' credits. 53 such segments in 18 sessions,
+#   all from 2026-08-18 to 2026-10-20, while Swedish ran on large-v3; English
+#   still does. Each was a whole segment on its own, and real speech mentions
+#   the same words ("Textning ska vara längre ...", "... så prenumererar man
+#   på det"), so only a segment that is nothing but a credit goes.
+# - KB-Whisper writes subtitle markup, mostly entities without their
+#   semicolon, inside real speech and in loops: "M&amp,A", "Smith &ampphew",
+#   "Nja, så &lt&gt&gt&lt&gt..." (73 hits in 2 of 14 meetings in the
+#   2026-10-27 benchmark, vault digitalt/taligenkänning.md; 79 segments in the
+#   KB-Whisper sessions before 2026-06-04 and on 2026-11-02). "&amp" becomes
+#   "&"; other entities and tags go, since speech never holds "<". A segment
+#   with no speech left once its markup is gone goes.
+SUBTITLE_CREDIT_RE = re.compile(
     r"(svensk)?textning\.nu"
     r"|undertexter från amara\.org-gemenskapen"
     r"|tack för att (du|ni) tittade på den här videon",
     re.IGNORECASE,
 )
+MARKUP_TAG_RE = re.compile(r"</?[a-zA-Z]+\s*/?>")
+MARKUP_ENTITY_RE = re.compile(r"&(amp|lt|gt|quot|apos|nbsp|#\d+);?", re.IGNORECASE)
+
+
+def _strip_markup(text: str) -> str:
+    # Until nothing changes: "&amp;amp," is escaped twice.
+    while True:
+        stripped = MARKUP_ENTITY_RE.sub(
+            lambda m: "&" if m.group(1).lower() == "amp" else "", MARKUP_TAG_RE.sub("", text)
+        )
+        if stripped == text:
+            return text
+        text = stripped
 
 
 def drop_subtitle_artifacts(result: dict) -> dict:
-    segments = result.get("segments", [])
-    kept = [
-        s for s in segments
-        if not SUBTITLE_ARTIFACT_RE.fullmatch(s.get("text", "").strip().rstrip(".!"))
-    ]
-    if len(kept) < len(segments):
-        print(f"    Dropped {len(segments) - len(kept)} subtitle artifact segment(s)")
+    kept, dropped, cleaned = [], 0, 0
+    for segment in result.get("segments", []):
+        text = segment.get("text", "")
+        plain = _strip_markup(text)
+        had_markup = plain != text
+        credit = SUBTITLE_CREDIT_RE.fullmatch(plain.strip().rstrip(".!"))
+        if credit or (had_markup and not any(c.isalnum() for c in plain)):
+            dropped += 1
+            continue
+        if had_markup:
+            segment = {**segment, "text": plain}
+            cleaned += 1
+        kept.append(segment)
+    if dropped or cleaned:
+        print(f"    Subtitle artifacts: dropped {dropped} segment(s), cleaned markup from {cleaned}")
     return {**result, "segments": kept}
 
 

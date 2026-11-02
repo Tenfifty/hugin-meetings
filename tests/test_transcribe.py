@@ -47,3 +47,28 @@ def test_subtitle_artifacts_are_dropped_only_as_whole_segments():
     kept = transcribe.drop_subtitle_artifacts(result)
     assert [s["text"] for s in kept["segments"]] == speech
     assert kept["language"] == "sv"
+
+
+def test_subtitle_markup_goes_and_is_cleaned_out_of_speech():
+    # KB-Whisper's kind, as found in the transcripts: entities without their
+    # semicolon inside speech, loops, and <i> tags.
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": " &amp;"},
+        {"start": 1.0, "end": 2.0, "text": "<i><i><i><i><i>"},
+        {"start": 2.0, "end": 3.0, "text": "&lt&gt&gt&lt&gt&lt&gt&lt"},
+        {"start": 3.0, "end": 4.0, "text": " Så om ni gör mycket M&amp,A och det är stora pengar."},
+        {"start": 4.0, "end": 5.0, "text": "Nja, så &lt&gt&gt&lt&gt&lt&gt&lt&gt&lt&gt&lt&lt&gt"},
+        {"start": 5.0, "end": 6.0, "text": "<i>Det här är sant.</i>"},
+        {"start": 6.0, "end": 7.0, "text": " ... ... ..."},
+        {"start": 7.0, "end": 8.0, "text": " Smith &amp;amp, ConMed och Arthrex."},
+    ]
+    kept = transcribe.drop_subtitle_artifacts({"segments": segments})["segments"]
+    assert [s["text"] for s in kept] == [
+        " Så om ni gör mycket M&,A och det är stora pengar.",
+        "Nja, så ",
+        "Det här är sant.",
+        # Not markup: left for whoever decides about empty segments.
+        " ... ... ...",
+        " Smith &, ConMed och Arthrex.",
+    ]
+    assert [s["start"] for s in kept] == [3.0, 4.0, 5.0, 6.0, 7.0]
