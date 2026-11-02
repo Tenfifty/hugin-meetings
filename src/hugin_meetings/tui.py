@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import curses
-import importlib.util
 import io
 import os
 import subprocess
@@ -22,26 +21,15 @@ STATE_DIR = load_config().state_dir
 LOG_DIR = STATE_DIR / "logs" / "audio-tui"
 
 
-def load_module(module_name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 class AudioTui:
-    def __init__(self, summary_model: str, customer_model: str):
+    def __init__(self, summary_model: str):
         self.summary_model = summary_model
-        self.customer_model = customer_model
         self.recordings = audio_pipeline.scan_recordings()
         self.overview: tuple[str, list[str]] | None = None
         self.selected = 0
         self.message = ""
         self.log_lines: list[str] = []
         self.enroll_module = None
-        self.last_command_log: Path | None = None
 
     def refresh(self) -> None:
         self.recordings = audio_pipeline.scan_recordings()
@@ -206,7 +194,6 @@ class AudioTui:
                     [resolve_sibling_bin("hugin-meet-transcribe"), rec.timestamp],
                 )
             )
-            rec = self.find_recording(rec.timestamp) or rec
 
         transcript_arg = f"transcript-{rec.timestamp}.md"
         if not rec.has_calendar_metadata:
@@ -268,7 +255,9 @@ class AudioTui:
             if rec.needs_verification:
                 # verify_customer has already said why it could not.
                 return
+        self.run_pipeline(stdscr, rec)
 
+    def run_pipeline(self, stdscr, rec: audio_pipeline.MeetingStatus) -> None:
         if not rec.needs_pipeline:
             self.set_message("Pipeline already complete for this meeting.")
             return
@@ -295,33 +284,21 @@ class AudioTui:
         on the verification screen, which is where you decide.
         """
         context = rec.context
-        if context is None:
+        # A session verified before the context stage existed has a context
+        # without a language (2026-11-02 migration): nothing was probed.
+        if context is None or not context.language:
             return "-"
         value = context.language_value
         return value if rec.is_verified else f"{value}?"
 
     def customer_label(self, rec: audio_pipeline.MeetingStatus) -> str:
-        """A confirmed customer wins over a guess, wherever each of them lives.
+        state = rec.customer_state
+        return state.label if state is not None else "-"
 
-        The context is where a guess exists before verification; the customer
-        state is where a decision lands. Re-guessing an old meeting must not
-        make its settled customer look unsettled.
-        """
-        from . import context as meeting_context
-
-        guess = (
-            meeting_context.customer_state(rec.context)
-            if rec.context is not None
-            else None
-        )
-        candidates = [rec.customer_state, guess]
-        for state in candidates:
-            if state is not None and state.verified:
-                return state.label
-        for state in candidates:
-            if state is not None:
-                return state.label
-        return "-"
+    @staticmethod
+    def vote_text(language: dict) -> str:
+        """The langid windows that counted, as "sv x3, en x1"; "" for none."""
+        return ", ".join(f"{lang} x{count}" for lang, count in (language.get("votes") or {}).items())
 
     def run_command(self, stdscr, title: str, cmd: list[str]) -> None:
         env = os.environ.copy()
@@ -330,7 +307,6 @@ class AudioTui:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         slug = self._command_slug(cmd)
         log_path = LOG_DIR / f"{stamp}-{slug}.log"
-        self.last_command_log = log_path
         self.append_log(f"$ {' '.join(cmd)}")
         self.set_message(title)
         self.draw_progress(stdscr, title, [])
@@ -396,18 +372,7 @@ class AudioTui:
             if key in (ord("b"), ord("B"), ord("q"), ord("Q"), 27):
                 return
             if key in (ord("g"), ord("G")):
-                if rec.needs_pipeline:
-                    try:
-                        for title, cmd in self.pending_commands(rec):
-                            self.run_command(stdscr, title, cmd)
-                        self.refresh()
-                        rec = self.find_recording(rec.timestamp) or rec
-                    except Exception as exc:
-                        self.set_message(str(exc))
-                    finally:
-                        self.refresh()
-                else:
-                    self.set_message("Pipeline already complete for this meeting.")
+                self.run_pipeline(stdscr, rec)
             elif key in (ord("e"), ord("E")):
                 self.run_enrollment(stdscr, rec)
                 self.refresh()
@@ -464,9 +429,9 @@ class AudioTui:
         language_note = ""
         if rec.context is not None:
             language = rec.context.language or {}
-            votes = language.get("votes") or {}
+            votes = self.vote_text(language)
             if votes:
-                language_note = "  [" + ", ".join(f"{k} x{v}" for k, v in votes.items()) + "]"
+                language_note = f"  [{votes}]"
             elif language.get("note"):
                 language_note = f"  [{language['note']}]"
         stdscr.addstr(
@@ -732,8 +697,7 @@ class AudioTui:
         from . import context as meeting_context
 
         language = context.language or {}
-        votes = language.get("votes") or {}
-        vote_text = ", ".join(f"{lang} x{count}" for lang, count in votes.items()) or "-"
+        vote_text = self.vote_text(language) or "-"
         state = meeting_context.customer_state(context)
         event = meeting_context.calendar_fields(context)
 
@@ -821,9 +785,7 @@ class AudioTui:
         from . import context as meeting_context
 
         if rec.summary_md and rec.summary_md.exists():
-            audio_pipeline.remove_customer_link(rec.summary_md)
-        else:
-            audio_pipeline.clear_customer_state(rec.timestamp)
+            audio_pipeline.clear_customer_metadata(rec.summary_md)
         context = rec.context
         if context is not None:
             context.customer = None
@@ -879,7 +841,7 @@ class AudioTui:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         stdscr.addstr(0, 0, f"Delete meeting {rec.timestamp}", curses.color_pair(4) | curses.A_BOLD)
-        stdscr.addstr(1, 0, "This removes raw audio, transcripts, summaries, cached WAVs, and customer-state JSON."[: w - 1])
+        stdscr.addstr(1, 0, "This removes raw audio, transcripts, summaries, cached WAVs, and the session context."[: w - 1])
         stdscr.addstr(2, 0, "Project/customer notes are left unchanged."[: w - 1])
         stdscr.addstr(4, 0, "Files to delete", curses.color_pair(5) | curses.A_BOLD)
         for offset, path in enumerate(paths[: max(1, h - 8)], start=5):
@@ -959,20 +921,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Hugin audio pipeline TUI")
     parser.add_argument(
         "--summary-model",
-        default=audio_pipeline.summarize_tool.DEFAULT_MODEL,
+        default=load_config().summary_model,
         help="Model for summary generation when the pipeline needs summarization.",
-    )
-    parser.add_argument(
-        "--customer-model",
-        default=audio_pipeline.DEFAULT_CUSTOMER_MODEL,
-        help="Model for customer-link suggestion.",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    app = AudioTui(summary_model=args.summary_model, customer_model=args.customer_model)
+    app = AudioTui(summary_model=args.summary_model)
     curses.wrapper(app.run)
     return 0
 

@@ -24,9 +24,8 @@ widgets, phone apps) live under `frontends/` or in separate repos.
    (or a fine-tuned variant) in the confirmed language, plus a speaker
    diarizer, and merges the outputs into a unified transcript with the
    calendar metadata attached.
-5. **Summarize** — generates a structured meeting summary via a local
-   LLM (llama.cpp) or a remote model through Codex, Claude Code, or Google
-   Antigravity (`agy`).
+5. **Summarize** — generates a structured meeting summary through Codex,
+   Claude Code, or Google Antigravity (`agy`).
 6. **Publish** — writes the summary into the linked project/customer note.
 7. **Post to Slack** — posts the meeting abstract to a project Slack
    channel, with the full summary (minus personal notes) as a thread reply.
@@ -63,10 +62,7 @@ python -m pip install -e .
 # With transcription and speaker-enrollment deps
 python -m pip install -e ".[transcribe]"
 
-# Remote summarization through codex/claude/agy uses CLI tools, no Python extra.
-
-# With local llama.cpp summarization deps
-python -m pip install -e ".[summarize-local]"
+# Summarization through codex/claude/agy uses CLI tools, no Python extra.
 ```
 
 When developing from sibling checkouts, install the shared `hugin` library
@@ -211,10 +207,6 @@ audio. Every session an event refers to must still be in the archive: if one
 was deleted (`d` in the TUI), the update stops and names the person, and a
 `--remove-session` for that session is the fix.
 
-Profiles written before the events existed have no time spans and cannot be
-rebuilt. Until they are migrated, `hugin-meet-enroll` refuses to write events
-over them and transcription uses them as they are.
-
 To purge a single meeting entry from the TUI, select it and press `d`; this
 deletes the archived raw audio, transcript, summary, cached WAVs, and the
 context and customer-state JSON for that meeting, while leaving
@@ -329,6 +321,7 @@ Key integration points a frontend needs:
 src/hugin_meetings/
   config.py               Config loader (hugin.yaml + meetings.yaml)
   pipeline.py             Metadata, customer notes, shared pipeline helpers
+  matcher.py              LLM customer matcher (used by the context stage)
   recording.py            Recording primitives used by frontends
   context.py              First stage: language + calendar + customer, and verification
   langid.py               Language identification from the audio

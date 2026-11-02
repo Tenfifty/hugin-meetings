@@ -122,7 +122,6 @@ def test_allowlist_skips_not_ready(speakers):
 def test_match_respects_allowlist(speakers):
     # A voice near the "Charlotte" direction, as an uninvited woman's would be.
     emb = {"SPEAKER_0": [0, 1.0, 0.05]}
-    assert transcribe.match_speakers(emb) == {"SPEAKER_0": "Charlotte Eriksson"}
     assert transcribe.match_speakers(emb, ["David Fendrich"]) == {}
     assert transcribe.match_speakers(emb, []) == {}
     assert transcribe.match_speakers(emb, ["David Fendrich", "Charlotte Eriksson"]) == {

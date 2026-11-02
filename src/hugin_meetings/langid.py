@@ -207,19 +207,6 @@ def _decode_region(path: Path, start: float, seconds: float) -> "np.ndarray":
     return np.frombuffer(result.stdout, dtype=np.float32)
 
 
-def largest_part(paths: list[Path]) -> Path | None:
-    """The part worth listening to.
-
-    Changing audio device mid-setup rotates the recording, leaving a few
-    seconds of junk in its own part. The meeting is in the long one.
-    """
-    from .pipeline import audio_duration
-
-    if not paths:
-        return None
-    return max(paths, key=audio_duration)
-
-
 def _probe_region(path: Path, channel: str, fraction: float, duration: float) -> LanguageProbe | None:
     """Decode, de-silence and score one sample point. None if it holds no speech."""
     model = _load_model()
@@ -255,21 +242,21 @@ def _run_probes(tasks: list[tuple[Path, str, float, float]]) -> list[LanguagePro
 
 
 def channel_tasks(paths: list[Path], channel: str) -> list[tuple[Path, str, float, float]]:
-    """One task per sample point of the channel's largest part."""
+    """One task per sample point of the channel's largest part.
+
+    Changing audio device mid-setup rotates the recording, leaving a few
+    seconds of junk in its own part. The meeting is in the long one.
+    """
     from .pipeline import audio_duration
 
-    path = largest_part(paths)
-    if path is None:
+    if not paths:
         return []
-    duration = audio_duration(path)
+    durations = {path: audio_duration(path) for path in paths}
+    path = max(paths, key=durations.__getitem__)
+    duration = durations[path]
     if duration <= 0:
         return []
     return [(path, channel, fraction, duration) for fraction in SAMPLE_POINTS]
-
-
-def probe_channel(paths: list[Path], channel: str) -> list[LanguageProbe]:
-    """Score SAMPLE_POINTS of one channel's largest part."""
-    return _run_probes(channel_tasks(paths, channel))
 
 
 def identify_session(mic_parts: list[Path], sys_parts: list[Path]) -> LanguageResult:

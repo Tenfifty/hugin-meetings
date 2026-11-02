@@ -68,6 +68,15 @@ def test_same_voice_on_two_overlapping_slots_is_merged():
     assert {label for *_, label in out} == {"speaker_0"}
 
 
+def test_diarize_skips_empty_transcription():
+    result = {"segments": [], "language": "sv"}
+
+    def diarizer(_path):
+        raise AssertionError("diarizer must not run without transcript segments")
+
+    assert transcribe.diarize(Path("silent.opus"), result, "cpu", diarizer) is result
+
+
 def test_sortformer_no_speech_drops_hallucinated_segments(monkeypatch):
     result = {
         "segments": [{"start": 0.0, "end": 5.0, "text": " Undertexter från Amara.org-gemenskapen"}],
@@ -76,7 +85,7 @@ def test_sortformer_no_speech_drops_hallucinated_segments(monkeypatch):
     monkeypatch.setattr(transcribe, "_ensure_pcm_wav", lambda path: path)
     monkeypatch.setattr(transcribe, "audio_duration", lambda path: 6.1)
     monkeypatch.setattr(transcribe, "_cuda_memory_stats", lambda: "")
-    out = transcribe.diarize(Path("sys-p03.opus"), result, "cpu", "sortformer", lambda _path: [], None)
+    out = transcribe.diarize(Path("sys-p03.opus"), result, "cpu", lambda _path: [])
     assert out["segments"] == []
 
 
@@ -89,5 +98,5 @@ def test_sortformer_labels_reach_the_words(monkeypatch):
     monkeypatch.setattr(transcribe, "audio_duration", lambda path: 6.0)
     monkeypatch.setattr(transcribe, "_cuda_memory_stats", lambda: "")
     diarizer = lambda _path: [(0.0, 2.5, "speaker_0"), (2.5, 6.0, "speaker_1")]
-    out = transcribe.diarize(Path("mic-p01.opus"), result, "cpu", "sortformer", diarizer, None)
+    out = transcribe.diarize(Path("mic-p01.opus"), result, "cpu", diarizer)
     assert [seg["speaker"] for seg in out["segments"]] == ["speaker_0", "speaker_1"]

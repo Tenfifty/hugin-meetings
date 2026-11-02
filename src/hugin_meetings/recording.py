@@ -97,8 +97,6 @@ def start_context_guess(session_id: str, audio_dir: Path = RAW_AUDIO_DIR):
 
     Set HUGIN_NO_AUTO_CONTEXT to suppress it (tests, headless capture boxes).
     """
-    import os
-
     from .cli_utils import resolve_sibling_bin
 
     if os.environ.get("HUGIN_NO_AUTO_CONTEXT"):
@@ -187,23 +185,18 @@ class RecordingTrack:
         audio_dir: Path = RAW_AUDIO_DIR,
         recording_dir: Path = RECORDING_DIR,
         log_path: Path = DEFAULT_RECORDER_LOG_PATH,
-        input_format: str = "pulse",
-        ffmpeg_bin: str = "ffmpeg",
     ):
         self.prefix = prefix
         self.source = source
         self.audio_dir = audio_dir
         self.recording_dir = recording_dir
         self.log_path = log_path
-        self.input_format = input_format
-        self.ffmpeg_bin = ffmpeg_bin
         self.recording = False
         self.process = None
         self.log_file = None
         self.current_file = None
         self.session_id = None
         self.next_part = 1
-        self.segment_timer = None
         self.start_time = None
 
     def start_segment(self) -> None:
@@ -219,8 +212,6 @@ class RecordingTrack:
         command = build_ffmpeg_recording_command(
             source=self.source,
             output_path=self.current_file,
-            ffmpeg_bin=self.ffmpeg_bin,
-            input_format=self.input_format,
         )
         logging.info(
             "Starting %s recording from %s: %s",
@@ -283,12 +274,6 @@ class RecordingTrack:
             return
         logging.info("Archived %s", archived)
         self.current_file = archived
-
-    def rotate_segment(self) -> bool:
-        self.stop_segment()
-        if self.recording:
-            self.start_segment()
-        return self.recording
 
     def elapsed_str(self) -> str:
         return elapsed_label(self.start_time)

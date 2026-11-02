@@ -13,10 +13,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from hugin.llm import run_prompt
-from hugin.prompts import resolve_prompt
-
-from . import summarize as summarize_tool
 from .config import load_config
 
 # Output directories (written to the user's vault/knowledge base)
@@ -29,7 +25,6 @@ RAW_AUDIO_DIR = load_config().raw_audio_dir
 RECORDING_DIR = load_config().recording_dir
 
 # State / cache directories
-STATE_AUDIO_DIR = load_config().state_dir
 WAV_CACHE_DIR = load_config().wav_cache_dir
 TRANSCRIPT_JSON_DIR = load_config().transcript_json_dir
 
@@ -37,16 +32,6 @@ TRANSCRIPT_JSON_DIR = load_config().transcript_json_dir
 # Internal naming retains "CUSTOMERS_" for on-disk backward compatibility;
 # the user-facing concept is "project" (see config.project_matcher).
 CUSTOMERS_DIR = load_config().project_matcher.projects_dir
-INTERNAL_PROJECT = load_config().project_matcher.internal_project
-
-def _relative_or_absolute(path: Path) -> str:
-    """Return path relative to vault if possible, else absolute."""
-    if load_config().vault_path:
-        try:
-            return str(path.relative_to(load_config().vault_path))
-        except ValueError:
-            pass
-    return str(path)
 
 CALENDAR_METADATA_START = "<!-- calendar-metadata:start -->"
 CALENDAR_METADATA_END = "<!-- calendar-metadata:end -->"
@@ -100,20 +85,23 @@ SUMMARY_HEADER_RE = re.compile(
     rf"^({re.escape(load_config().summary_header)})(.*)$", re.MULTILINE
 )
 PERSONAL_SECTION_HEADER = load_config().personal_section_header
+PERSONAL_SECTION_RE = (
+    re.compile(
+        rf"^{re.escape(PERSONAL_SECTION_HEADER)}\s*$.*?(?=^### |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    if PERSONAL_SECTION_HEADER
+    else None
+)
 TRANSCRIPT_LINK_RE = re.compile(r"^\[Transcript\]\([^)]+\)\s*$", re.MULTILINE)
 CUSTOMER_ENTRY_HEADER_RE = re.compile(r"^## <\d{4}-\d{2}-\d{2} [^>]+>\s*$", re.MULTILINE)
 
 CustomerAction = Literal["link_existing", "suggest_new", "no_match"]
-CustomerStatus = Literal["linked", "suggested_new", "no_match"]
 Confidence = Literal["high", "medium", "low"]
 
 DEFAULT_CUSTOMER_MODEL = load_config().project_matcher.model
-DEFAULT_CUSTOMER_EFFORT = load_config().project_matcher.effort
-CUSTOMER_JSON_SYSTEM_PROMPT = load_config().project_matcher.json_system_prompt
 INACTIVE_DIR_NAMES = set(load_config().project_matcher.inactive_dir_names)
 MAX_CANDIDATE_PREVIEW = 700
-MAX_MEETING_TEXT = 12000
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
 
 
 @dataclass
@@ -122,29 +110,6 @@ class CustomerNote:
     path: Path
     is_active: bool
     preview: str
-
-
-@dataclass
-class CustomerDecision:
-    action: CustomerAction
-    confidence: Confidence
-    rationale: str
-    customer_name: str | None = None
-    customer_path: Path | None = None
-    suggested_name: str | None = None
-    model: str = DEFAULT_CUSTOMER_MODEL
-
-
-@dataclass
-class CustomerMetadata:
-    status: CustomerStatus
-    confidence: Confidence
-    rationale: str
-    transcript_path: Path
-    model: str
-    customer_name: str | None = None
-    customer_path: Path | None = None
-    suggested_name: str | None = None
 
 
 @dataclass
@@ -160,14 +125,6 @@ class CustomerState:
     source: str = "auto"
 
     @property
-    def status(self) -> CustomerStatus:
-        if self.action == "link_existing":
-            return "linked"
-        if self.action == "suggest_new":
-            return "suggested_new"
-        return "no_match"
-
-    @property
     def label(self) -> str:
         if self.action == "link_existing":
             base = self.customer_name or "-"
@@ -181,15 +138,12 @@ class CustomerState:
 @dataclass
 class MeetingStatus:
     timestamp: str
-    mic_path: Path | None
-    sys_path: Path | None
     mic_parts: tuple[Path, ...]
     sys_parts: tuple[Path, ...]
     transcript_json: Path | None
     transcript_md: Path | None
     summary_md: Path | None
     calendar_fields: dict[str, str]
-    customer_state: CustomerState | None
     anonymous_speakers: list[str]
     context: Any | None = None
     # Parts of this session still in the recording dir, and whether they are
@@ -212,20 +166,22 @@ class MeetingStatus:
         )
 
     @property
-    def has_context(self) -> bool:
-        return self.context is not None
+    def customer_state(self) -> CustomerState | None:
+        """The customer as the context holds it: a guess, or a person's decision.
+
+        The context is the only place a customer is stored. Until 2026-11-02 a
+        decision was also written to ``transcript-{ts}.customer.json``, and two
+        sources had to be reconciled on every read; sessions verified before
+        the context stage existed were given a minimal verified context then.
+        """
+        if self.context is None or not self.context.customer:
+            return None
+        return deserialize_customer_state(self.context.customer)
 
     @property
     def is_verified(self) -> bool:
-        """A person has confirmed what this meeting is.
-
-        Meetings processed before the context stage existed were verified in
-        the old place — the customer state written when a person confirmed the
-        match — and must not be dragged back through verification now.
-        """
-        if self.context is not None and self.context.verified:
-            return True
-        return bool(self.customer_state and self.customer_state.verified)
+        """A person has confirmed what this meeting is."""
+        return self.context is not None and self.context.verified
 
     @property
     def needs_verification(self) -> bool:
@@ -239,19 +195,7 @@ class MeetingStatus:
         state = self.customer_state
         if state is None or not state.verified or state.action != "link_existing":
             return False
-        return parse_customer_metadata(self.summary_md) is None
-
-    @property
-    def has_customer_guess(self) -> bool:
-        return self.customer_state is not None
-
-    @property
-    def has_customer_link(self) -> bool:
-        return bool(
-            self.customer_state
-            and self.customer_state.verified
-            and self.customer_state.action == "link_existing"
-        )
+        return summary_customer_link(self.summary_md) is None
 
     @property
     def pipeline_steps(self) -> list[bool]:
@@ -281,10 +225,6 @@ class MeetingStatus:
         """Nothing expensive runs on a session a person has not confirmed,
         or on one whose parts are not all in the archive yet."""
         return self.is_verified and self.needs_pipeline and not self.in_progress_parts
-
-    @property
-    def needs_enrollment(self) -> bool:
-        return bool(self.anonymous_speakers)
 
     @property
     def raw_part_count(self) -> int:
@@ -363,15 +303,23 @@ def transcript_json_path(ts: str) -> Path:
     return TRANSCRIPT_JSON_DIR / year_subdir(ts) / f"transcript-{ts}.json"
 
 
+def transcript_md_path(ts: str) -> Path:
+    return TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md"
+
+
+def summary_md_path(ts: str) -> Path:
+    return SUMMARY_DIR / year_subdir(ts) / f"summary-{ts}.md"
+
+
+def context_path(ts: str) -> Path:
+    return TRANSCRIPT_JSON_DIR / year_subdir(ts) / f"context-{ts}.json"
+
+
 def transcript_json_for_markdown(path: Path) -> Path | None:
     ts = extract_timestamp(path.name)
     if not ts:
         return None
     return transcript_json_path(ts)
-
-
-def customer_state_path(ts: str) -> Path:
-    return TRANSCRIPT_JSON_DIR / year_subdir(ts) / f"transcript-{ts}.customer.json"
 
 
 @dataclass(frozen=True)
@@ -468,26 +416,17 @@ def meeting_artifact_paths(rec: MeetingStatus) -> list[Path]:
         if path is not None and path not in paths:
             paths.append(path)
 
-    for path in (*rec.mic_parts, *rec.sys_parts):
-        add(path)
-        add(WAV_CACHE_DIR / f"{path.stem}.wav")
-
+    # The WAV glob also catches the echo-cancelled *.aec.wav beside each part.
     for prefix in ("mic", "sys"):
         for path in sorted(RAW_AUDIO_DIR.rglob(f"{prefix}-{rec.timestamp}*.opus")):
             add(path)
-            add(WAV_CACHE_DIR / f"{path.stem}.wav")
         for path in sorted(WAV_CACHE_DIR.rglob(f"{prefix}-{rec.timestamp}*.wav")):
             add(path)
 
-    yyyy = year_subdir(rec.timestamp)
-    add(rec.transcript_json)
     add(transcript_json_path(rec.timestamp))
-    add(customer_state_path(rec.timestamp))
-    add(TRANSCRIPT_JSON_DIR / yyyy / f"context-{rec.timestamp}.json")
-    add(rec.transcript_md)
-    add(TRANSCRIPT_DIR / yyyy / f"transcript-{rec.timestamp}.md")
-    add(rec.summary_md)
-    add(SUMMARY_DIR / yyyy / f"summary-{rec.timestamp}.md")
+    add(context_path(rec.timestamp))
+    add(transcript_md_path(rec.timestamp))
+    add(summary_md_path(rec.timestamp))
 
     return [path for path in paths if path.exists()]
 
@@ -514,12 +453,13 @@ def extract_metadata_block(text: str, start: str, end: str) -> str | None:
     return match.group(1).strip()
 
 
+def metadata_block_re(start: str, end: str) -> re.Pattern[str]:
+    """A whole marked block with the blank lines after it."""
+    return re.compile(rf"{re.escape(start)}.*?{re.escape(end)}\n*", re.DOTALL)
+
+
 def remove_metadata_block(text: str, start: str, end: str) -> str:
-    pattern = re.compile(
-        rf"{re.escape(start)}.*?{re.escape(end)}\n*",
-        re.DOTALL,
-    )
-    updated = pattern.sub("", text)
+    updated = metadata_block_re(start, end).sub("", text)
     return re.sub(r"\n{3,}", "\n\n", updated).strip() + "\n"
 
 
@@ -541,80 +481,29 @@ def parse_markdown_link(value: str) -> tuple[str, Path] | None:
     return match.group(1), Path(unquote(match.group(2)))
 
 
+def calendar_metadata_fields(text: str) -> dict[str, str]:
+    """The calendar block in ``text`` as key/value pairs, {} without one."""
+    return parse_key_value_block(
+        extract_metadata_block(text, CALENDAR_METADATA_START, CALENDAR_METADATA_END)
+    )
+
+
 def parse_calendar_metadata(path: Path | None) -> dict[str, str]:
     if not path or not path.exists():
         return {}
-    text = path.read_text()
-    block = extract_metadata_block(text, CALENDAR_METADATA_START, CALENDAR_METADATA_END)
-    return parse_key_value_block(block)
+    return calendar_metadata_fields(path.read_text())
 
 
-def parse_customer_metadata(path: Path | None) -> CustomerMetadata | None:
+def summary_customer_link(path: Path | None) -> tuple[str, Path] | None:
+    """The customer a summary's header links to, as (name, note path)."""
     if not path or not path.exists():
         return None
-
-    text = path.read_text()
-    header_match = SUMMARY_HEADER_RE.search(text)
-    if header_match:
-        header_links = LINK_RE.findall(header_match.group(2))
-        if header_links:
-            name, rel_path = header_links[0]
-            ts = extract_timestamp(path.name)
-            transcript_path = TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md" if ts else None
-            return CustomerMetadata(
-                status="linked",
-                confidence="high",
-                rationale="Inferred from compact summary customer link.",
-                transcript_path=transcript_path,
-                model="summary",
-                customer_name=name,
-                customer_path=current_customer_path(name, (path.parent / unquote(rel_path)).resolve()),
-            )
-    return None
-
-
-def state_from_summary_metadata(path: Path | None) -> CustomerState | None:
-    metadata = parse_customer_metadata(path)
-    if metadata is None:
+    header_match = SUMMARY_HEADER_RE.search(path.read_text())
+    link = parse_markdown_link(header_match.group(2)) if header_match else None
+    if link is None:
         return None
-
-    if metadata.status == "linked":
-        action: CustomerAction = "link_existing"
-    elif metadata.status == "suggested_new":
-        action = "suggest_new"
-    else:
-        action = "no_match"
-
-    return CustomerState(
-        action=action,
-        confidence=metadata.confidence,
-        rationale=metadata.rationale,
-        model=metadata.model,
-        verified=True,
-        customer_name=metadata.customer_name,
-        customer_path=metadata.customer_path,
-        suggested_name=metadata.suggested_name,
-        source="summary",
-    )
-
-
-def state_from_decision(
-    decision: CustomerDecision,
-    *,
-    verified: bool = False,
-    source: str = "auto",
-) -> CustomerState:
-    return CustomerState(
-        action=decision.action,
-        confidence=decision.confidence,
-        rationale=decision.rationale,
-        model=decision.model,
-        verified=verified,
-        customer_name=decision.customer_name,
-        customer_path=decision.customer_path,
-        suggested_name=decision.suggested_name,
-        source=source,
-    )
+    name, rel_path = link
+    return name, current_customer_path(name, (path.parent / rel_path).resolve())
 
 
 def serialize_customer_state(state: CustomerState) -> dict[str, str | bool | None]:
@@ -659,27 +548,6 @@ def deserialize_customer_state(payload: dict) -> CustomerState:
     )
 
 
-def load_customer_state(ts: str, summary_path: Path | None = None) -> CustomerState | None:
-    state_path = customer_state_path(ts)
-    if state_path.exists():
-        try:
-            return deserialize_customer_state(json.loads(state_path.read_text()))
-        except Exception:
-            pass
-    return state_from_summary_metadata(summary_path)
-
-
-def save_customer_state(ts: str, state: CustomerState) -> Path:
-    path = customer_state_path(ts)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(serialize_customer_state(state), indent=2, ensure_ascii=False) + "\n")
-    return path
-
-
-def clear_customer_state(ts: str) -> None:
-    customer_state_path(ts).unlink(missing_ok=True)
-
-
 def summary_excerpt(path: Path, max_len: int = 120) -> str:
     text = remove_metadata_block(path.read_text(), CALENDAR_METADATA_START, CALENDAR_METADATA_END)
     text = _strip_customer_header_link(text)
@@ -697,6 +565,8 @@ def _customer_note_paths() -> list[tuple[Path, bool]]:
     not projects of its own, so it is not a match candidate. Returns each path
     with whether it is active.
     """
+    if not CUSTOMERS_DIR or not CUSTOMERS_DIR.is_dir():
+        return []
     paths = list(CUSTOMERS_DIR.glob("*.md"))
     for name in INACTIVE_DIR_NAMES:
         paths.extend((CUSTOMERS_DIR / name).glob("*.md"))
@@ -748,18 +618,13 @@ def scan_recordings() -> list[MeetingStatus]:
     in_progress = scan_in_progress_parts()
     timestamps: set[str] = set(raw_sessions) | set(in_progress)
 
-    for pattern, prefix in (
-        (TRANSCRIPT_DIR.rglob("transcript-*.md"), "transcript-"),
-        (TRANSCRIPT_JSON_DIR.rglob("transcript-*.json"), "transcript-"),
-        (SUMMARY_DIR.rglob("summary-*.md"), "summary-"),
+    for paths in (
+        TRANSCRIPT_DIR.rglob("transcript-*.md"),
+        TRANSCRIPT_JSON_DIR.rglob("transcript-*.json"),
+        SUMMARY_DIR.rglob("summary-*.md"),
     ):
-        for path in pattern:
-            if path.name.endswith(".customer.json"):
-                continue
-            stem = path.stem
-            if stem.endswith(".md"):
-                stem = Path(stem).stem
-            ts = stem.removeprefix(prefix)
+        for path in paths:
+            ts = extract_timestamp(path.name)
             if ts:
                 timestamps.add(ts)
 
@@ -768,23 +633,19 @@ def scan_recordings() -> list[MeetingStatus]:
         raw_session = raw_sessions.get(ts)
         mic_parts = tuple(raw_session.mic_parts) if raw_session else ()
         sys_parts = tuple(raw_session.sys_parts) if raw_session else ()
-        yyyy = year_subdir(ts)
-        transcript_md = TRANSCRIPT_DIR / yyyy / f"transcript-{ts}.md"
+        transcript_md = transcript_md_path(ts)
         transcript_json = transcript_json_path(ts)
-        summary_md = SUMMARY_DIR / yyyy / f"summary-{ts}.md"
+        summary_md = summary_md_path(ts)
 
         meetings.append(
             MeetingStatus(
                 timestamp=ts,
-                mic_path=mic_parts[0] if mic_parts else None,
-                sys_path=sys_parts[0] if sys_parts else None,
                 mic_parts=mic_parts,
                 sys_parts=sys_parts,
                 transcript_json=transcript_json if transcript_json.exists() else None,
                 transcript_md=transcript_md if transcript_md.exists() else None,
                 summary_md=summary_md if summary_md.exists() else None,
                 calendar_fields=parse_calendar_metadata(transcript_md if transcript_md.exists() else None),
-                customer_state=load_customer_state(ts, summary_md if summary_md.exists() else None),
                 anonymous_speakers=load_anonymous_speakers(transcript_json if transcript_json.exists() else None),
                 context=meeting_context.load_context(ts),
                 in_progress_parts=tuple(in_progress.get(ts, ())),
@@ -792,118 +653,6 @@ def scan_recordings() -> list[MeetingStatus]:
             )
         )
     return meetings
-
-
-def _load_customer_prompt_template() -> str:
-    path = resolve_prompt(
-        base="project_matcher",
-        language=load_config().language,
-        explicit=load_config().project_matcher.prompt_path,
-        package_dir=_PROMPTS_DIR,
-    )
-    return path.read_text(encoding="utf-8")
-
-
-def _render_customer_prompt_template(template: str, values: dict[str, str]) -> str:
-    for key, value in values.items():
-        template = template.replace("{{" + key + "}}", value)
-    return template
-
-
-def build_customer_prompt_from(
-    calendar_fields: dict[str, str], meeting_text: str
-) -> tuple[str, list[CustomerNote]]:
-    """Render the matcher prompt from whatever the caller knows about a meeting.
-
-    Before transcription that is the calendar event alone; afterwards the
-    summary body carries most of the signal. Same template either way, so the
-    two stages cannot drift apart.
-    """
-    has_text = bool(meeting_text.strip())
-    summary_body = (
-        meeting_text.strip()[:MAX_MEETING_TEXT]
-        if has_text
-        else "(not transcribed yet — judge from the calendar event above)"
-    )
-    # Without this the model reads "Meeting text: (not transcribed yet)" as
-    # missing evidence and abstains, however clear the event is.
-    evidence_rules = "" if has_text else (
-        "- There is no meeting text yet. The calendar event is the complete evidence base: "
-        "judge from its title, description, organizer and the attendees' mail domains, and do "
-        "not abstain merely because no summary exists.\n"
-        "- An external organization named in the title, or owning an attendee's mail domain, "
-        "is concrete evidence. So is a customer named in the title of an otherwise internal meeting.\n"
-    )
-
-    calendar_lines = "\n".join(
-        f"- {key}: {value}" for key, value in calendar_fields.items()
-    ) or "- (no calendar metadata)"
-
-    all_notes = list_customer_notes()
-
-    candidate_context = "\n\n".join(
-        [
-            f"Customer: {note.name}\nPath: {_relative_or_absolute(note.path)}\nNotes: {note.preview}"
-            for note in all_notes
-        ]
-    )
-
-    internal_name = INTERNAL_PROJECT or "(internal)"
-    internal_rules = (
-        (
-            f"- A meeting can still belong to a project even if all attendees are internal {internal_name} people.\n"
-            f'- Choose "{internal_name}" only for genuinely internal meetings with no clear project/customer focus, such as admin, staffing, company process, internal tooling, internal strategy without a specific project, or similar operational topics.\n'
-            f'- If a known project is discussed concretely, prefer that project over "{internal_name}".\n'
-        )
-        if INTERNAL_PROJECT
-        else ""
-    )
-
-    prompt = _render_customer_prompt_template(
-        _load_customer_prompt_template(),
-        {
-            "internal_rules": internal_rules,
-            "evidence_rules": evidence_rules,
-            "candidate_context": candidate_context,
-            "calendar_lines": calendar_lines,
-            "summary_body": summary_body,
-        },
-    )
-
-    return prompt, all_notes
-
-
-def extract_json_object(text: str) -> dict:
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        return json.loads(text[start : end + 1])
-
-    raise ValueError("No JSON object found in model output")
-
-
-def run_remote_json_prompt(model: str, prompt: str, effort: str | None = None) -> dict:
-    return extract_json_object(run_prompt(load_config().llm, model, prompt, effort=effort))
-
-
-def run_local_json_prompt(model: str, prompt: str) -> dict:
-    llm = summarize_tool.load_local_model(model)
-    response = llm.create_chat_completion(
-        messages=[
-            {"role": "system", "content": CUSTOMER_JSON_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        max_tokens=600,
-        temperature=0.2,
-    )
-    text = response["choices"][0]["message"]["content"]
-    return extract_json_object(text)
 
 
 def resolve_customer_path(name: str | None, candidates: list[CustomerNote]) -> Path | None:
@@ -965,6 +714,8 @@ def ensure_customer_note(customer_name: str) -> Path:
     if existing:
         return existing
 
+    if not CUSTOMERS_DIR:
+        raise ValueError("No projects_dir is configured, so there is nowhere to create a customer note.")
     CUSTOMERS_DIR.mkdir(parents=True, exist_ok=True)
     path = CUSTOMERS_DIR / _customer_note_filename(customer_name)
     # A folder name that did not resolve above is a material or inactive dir,
@@ -1000,155 +751,6 @@ def materialize_verified_customer_state(state: CustomerState) -> CustomerState:
     return state
 
 
-def suggest_customer_from_calendar(
-    calendar_fields: dict[str, str],
-    model: str = DEFAULT_CUSTOMER_MODEL,
-    effort: str = DEFAULT_CUSTOMER_EFFORT,
-) -> CustomerDecision:
-    """Match a meeting from its calendar event alone, before it is transcribed.
-
-    The event carries the mail domains, the title and the description, which is
-    usually enough to name the customer — and when it is not, the guess is
-    unverified anyway and the operator gets to correct it.
-    """
-    prompt, candidates = build_customer_prompt_from(calendar_fields, "")
-    return decide_customer(prompt, candidates, model, effort)
-
-
-def decide_customer(
-    prompt: str,
-    candidates: list[CustomerNote],
-    model: str = DEFAULT_CUSTOMER_MODEL,
-    effort: str = DEFAULT_CUSTOMER_EFFORT,
-) -> CustomerDecision:
-    if model in summarize_tool.LOCAL_MODELS:
-        payload = run_local_json_prompt(model, prompt)
-    else:
-        payload = run_remote_json_prompt(model, prompt, effort=effort)
-
-    action = str(payload.get("action", "no_match")).strip()
-    if action not in {"link_existing", "suggest_new", "no_match"}:
-        action = "no_match"
-
-    confidence = str(payload.get("confidence", "low")).strip().lower()
-    if confidence not in {"high", "medium", "low"}:
-        confidence = "low"
-
-    customer_name = payload.get("customer_name") or None
-    suggested_name = payload.get("suggested_name") or None
-    rationale = str(payload.get("rationale", "")).strip()
-
-    # Folder names are never guesses: a material folder named after its note
-    # resolves to the note, and any other folder is not a project at all.
-    if _is_folder_name(customer_name):
-        rationale = f"{rationale} (Ignored {customer_name!r}: a folder, not a project.)".strip()
-        customer_name = None
-    if _is_folder_name(suggested_name):
-        rationale = f"{rationale} (Ignored suggestion {suggested_name!r}: a folder, not a project.)".strip()
-        suggested_name = None
-
-    customer_path = resolve_customer_path(customer_name, candidates)
-    # A "new" project that already has a note under that name is a link, not a second note.
-    existing = resolve_customer_path(suggested_name, candidates) if action == "suggest_new" else None
-    if existing:
-        action, customer_name, customer_path, suggested_name = "link_existing", existing.stem, existing, None
-    if action == "link_existing" and not customer_path:
-        action = "suggest_new" if suggested_name else "no_match"
-    if action == "suggest_new" and not suggested_name:
-        action = "no_match"
-
-    return CustomerDecision(
-        action=action,
-        confidence=confidence,  # type: ignore[arg-type]
-        rationale=rationale or "No clear rationale returned.",
-        customer_name=customer_name,
-        customer_path=customer_path,
-        suggested_name=suggested_name,
-        model=model,
-    )
-
-
-def metadata_from_decision(
-    summary_path: Path,
-    decision: CustomerDecision,
-) -> CustomerMetadata:
-    ts = extract_timestamp(summary_path.name)
-    transcript_path = TRANSCRIPT_DIR / f"transcript-{ts}.md"
-
-    if decision.action == "link_existing":
-        return CustomerMetadata(
-            status="linked",
-            confidence=decision.confidence,
-            rationale=decision.rationale,
-            transcript_path=transcript_path,
-            model=decision.model,
-            customer_name=decision.customer_name,
-            customer_path=decision.customer_path,
-        )
-
-    if decision.action == "suggest_new":
-        return CustomerMetadata(
-            status="suggested_new",
-            confidence=decision.confidence,
-            rationale=decision.rationale,
-            transcript_path=transcript_path,
-            model=decision.model,
-            suggested_name=decision.suggested_name,
-        )
-
-    return CustomerMetadata(
-        status="no_match",
-        confidence=decision.confidence,
-        rationale=decision.rationale,
-        transcript_path=transcript_path,
-        model=decision.model,
-    )
-
-
-def metadata_from_state(
-    summary_path: Path,
-    state: CustomerState,
-) -> CustomerMetadata:
-    ts = extract_timestamp(summary_path.name)
-    transcript_path = TRANSCRIPT_DIR / f"transcript-{ts}.md"
-
-    if state.action == "link_existing":
-        return CustomerMetadata(
-            status="linked",
-            confidence=state.confidence,
-            rationale=state.rationale,
-            transcript_path=transcript_path,
-            model=state.model,
-            customer_name=state.customer_name,
-            customer_path=state.customer_path,
-        )
-
-    if state.action == "suggest_new":
-        return CustomerMetadata(
-            status="suggested_new",
-            confidence=state.confidence,
-            rationale=state.rationale,
-            transcript_path=transcript_path,
-            model=state.model,
-            suggested_name=state.suggested_name,
-        )
-
-    return CustomerMetadata(
-        status="no_match",
-        confidence=state.confidence,
-        rationale=state.rationale,
-        transcript_path=transcript_path,
-        model=state.model,
-    )
-
-
-def render_customer_metadata(summary_path: Path, metadata: CustomerMetadata) -> str:
-    if metadata.status == "linked" and metadata.customer_name and metadata.customer_path:
-        customer_rel = relative_link(metadata.customer_path, summary_path.parent)
-        return f"[{metadata.customer_name}]({customer_rel})"
-    return ""
-
-
 def _strip_customer_header_link(text: str) -> str:
     def repl(match: re.Match[str]) -> str:
         base = match.group(1)
@@ -1170,7 +772,7 @@ def _summary_transcript_path(summary_path: Path) -> Path:
     ts = extract_timestamp(summary_path.name)
     if not ts:
         raise ValueError(f"Could not determine timestamp from {summary_path.name}")
-    return TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md"
+    return transcript_md_path(ts)
 
 
 def ensure_summary_transcript_link(summary_path: Path) -> None:
@@ -1189,35 +791,42 @@ def format_log_timestamp(ts: str) -> str:
     return f"<{dt:%Y-%m-%d} {_weekday_label(dt)} {dt:%H:%M}>"
 
 
-def _summary_body_for_customer_note(summary_path: Path) -> str:
+def summary_body(summary_path: Path) -> str:
+    """The summary text without its header line and its customer and transcript links."""
     text = _strip_transcript_link(_strip_customer_header_link(summary_path.read_text())).strip()
     lines = text.splitlines()
     if lines and lines[0].startswith(load_config().summary_header):
         lines = lines[1:]
+    return "\n".join(lines).strip()
 
-    body = "\n".join(lines).strip()
+
+def summary_lead(body: str) -> str:
+    """Text before the first ### subsection."""
+    lines: list[str] = []
+    for line in body.splitlines():
+        if line.strip().startswith("### "):
+            break
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def personal_section(body: str) -> str:
+    """The configured personal follow-up section, header included, or ""."""
+    match = PERSONAL_SECTION_RE.search(body) if PERSONAL_SECTION_RE else None
+    return match.group(0).strip() if match else ""
+
+
+def without_personal_section(body: str) -> str:
+    if PERSONAL_SECTION_RE is None:
+        return body
+    return re.sub(r"\n{3,}", "\n\n", PERSONAL_SECTION_RE.sub("", body)).strip()
+
+
+def _summary_body_for_customer_note(summary_path: Path) -> str:
+    body = summary_body(summary_path)
     if not body:
         return ""
-
-    lead_lines: list[str] = []
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("### "):
-            break
-        lead_lines.append(line)
-
-    lead = "\n".join(lead_lines).strip()
-
-    personal = ""
-    if PERSONAL_SECTION_HEADER:
-        match = re.search(
-            rf"(^{re.escape(PERSONAL_SECTION_HEADER)}\s*$.*?)(?=^### |\Z)",
-            body,
-            re.MULTILINE | re.DOTALL,
-        )
-        personal = match.group(1).strip() if match else ""
-
-    parts = [part for part in (lead, personal) if part]
+    parts = [part for part in (summary_lead(body), personal_section(body)) if part]
     return "\n\n".join(parts).strip() + ("\n" if parts else "")
 
 
@@ -1320,15 +929,13 @@ def remove_customer_note_link(customer_path: Path, summary_path: Path) -> None:
     customer_path.write_text(re.sub(r"\n{3,}", "\n\n", updated).rstrip() + "\n")
 
 
-def write_customer_metadata(summary_path: Path, metadata: CustomerMetadata) -> None:
-    previous = parse_customer_metadata(summary_path)
+def write_customer_metadata(summary_path: Path, customer_name: str, customer_path: Path) -> None:
+    """Link the summary's header to its customer note, and publish it there."""
+    previous = summary_customer_link(summary_path)
     text = summary_path.read_text()
     updated = _strip_customer_header_link(text)
 
-    link = render_customer_metadata(summary_path, metadata)
-    if not link:
-        summary_path.write_text(updated)
-        return
+    link = f"[{customer_name}]({relative_link(customer_path, summary_path.parent)})"
 
     def repl(match: re.Match[str]) -> str:
         return f"{match.group(1)} {link}"
@@ -1341,60 +948,39 @@ def write_customer_metadata(summary_path: Path, metadata: CustomerMetadata) -> N
     summary_path.write_text(updated)
     ensure_summary_transcript_link(summary_path)
 
-    if previous and previous.customer_path and previous.customer_path != metadata.customer_path:
-        remove_customer_note_link(previous.customer_path, summary_path)
-    if metadata.customer_path:
-        sync_customer_note(metadata.customer_path, summary_path)
+    if previous and previous[1] != customer_path:
+        remove_customer_note_link(previous[1], summary_path)
+    sync_customer_note(customer_path, summary_path)
 
 
 def clear_customer_metadata(summary_path: Path) -> None:
-    previous = parse_customer_metadata(summary_path)
+    previous = summary_customer_link(summary_path)
     summary_path.write_text(_strip_customer_header_link(summary_path.read_text()))
     ensure_summary_transcript_link(summary_path)
-    if previous and previous.customer_path:
-        remove_customer_note_link(previous.customer_path, summary_path)
+    if previous:
+        remove_customer_note_link(previous[1], summary_path)
 
 
-def manual_customer_state(
-    *,
-    customer_name: str,
-    customer_path: Path,
-    rationale: str = "Manual selection from audio-tui.",
-    confidence: Confidence = "high",
-    verified: bool = True,
-) -> CustomerState:
+def manual_customer_state(*, customer_name: str, customer_path: Path) -> CustomerState:
     return CustomerState(
         action="link_existing",
-        confidence=confidence,
-        rationale=rationale,
+        confidence="high",
+        rationale="Manual selection from audio-tui.",
         model="manual",
-        verified=verified,
+        verified=True,
         customer_name=customer_name,
         customer_path=customer_path,
         source="manual",
     )
 
 
-def manual_new_customer_state(
-    *,
-    suggested_name: str,
-    rationale: str = "Manual free-text selection from audio-tui.",
-    confidence: Confidence = "high",
-    verified: bool = True,
-) -> CustomerState:
+def manual_new_customer_state(*, suggested_name: str) -> CustomerState:
     return CustomerState(
         action="suggest_new",
-        confidence=confidence,
-        rationale=rationale,
+        confidence="high",
+        rationale="Manual free-text selection from audio-tui.",
         model="manual",
-        verified=verified,
+        verified=True,
         suggested_name=suggested_name,
         source="manual",
     )
-
-
-def remove_customer_link(summary_path: Path) -> None:
-    ts = extract_timestamp(summary_path.name)
-    if ts:
-        clear_customer_state(ts)
-    clear_customer_metadata(summary_path)

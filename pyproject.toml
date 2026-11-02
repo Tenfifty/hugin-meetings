@@ -36,9 +36,6 @@ transcribe = [
     "torchaudio>=2.8,<2.9",
     "whisperx>=3.8,<3.9",
 ]
-summarize-local = [
-    "llama-cpp-python",
-]
 
 [project.scripts]
 hugin-meet-record = "hugin_meetings.recording:main"

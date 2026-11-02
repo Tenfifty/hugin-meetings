@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from hugin_meetings import pipeline
+from hugin_meetings import matcher, pipeline
 
 
 class ProjectNoteTests(unittest.TestCase):
@@ -41,15 +41,22 @@ class ProjectNoteTests(unittest.TestCase):
         (self.projects / "inaktiva").mkdir()
         (self.projects / "Old material").mkdir()
 
-    def decide(self, **payload: str) -> pipeline.CustomerDecision:
+    def decide(self, **payload: str) -> pipeline.CustomerState:
         candidates = pipeline.list_customer_notes()
-        with patch.object(pipeline, "run_remote_json_prompt", return_value=payload):
-            return pipeline.decide_customer("prompt", candidates, model="test-model")
+        with patch.object(matcher, "run_remote_json_prompt", return_value=payload):
+            return matcher.decide_customer("prompt", candidates, model="test-model")
 
 
 class FolderGuessTests(ProjectNoteTests):
-    def test_material_files_are_not_candidates(self) -> None:
-        self.assertEqual([note.name for note in pipeline.list_customer_notes()], ["AKA"])
+    def test_only_notes_directly_in_projects_or_inactive_dirs_are_candidates(self) -> None:
+        (self.projects / "inaktiva" / "Gammal.md").write_text("# Gammal\n")
+        nested = self.projects / "inaktiva" / "Gammal" / "notes.md"
+        nested.parent.mkdir()
+        nested.write_text("# Notes\n")
+
+        notes = {note.name: note.is_active for note in pipeline.list_customer_notes()}
+
+        self.assertEqual(notes, {"AKA": True, "Gammal": False})
 
     def test_material_folder_name_links_to_its_note(self) -> None:
         decision = self.decide(action="link_existing", customer_name="aka", confidence="high")
@@ -73,6 +80,8 @@ class FolderGuessTests(ProjectNoteTests):
         with self.assertRaises(ValueError):
             pipeline.ensure_customer_note("Old material")
         self.assertFalse((self.projects / "Old material.md").exists())
+        # A material folder beside its note names the note.
+        self.assertEqual(pipeline.ensure_customer_note("AKA"), self.aka)
 
 
 class MovedNoteTests(ProjectNoteTests):
@@ -92,15 +101,12 @@ class MovedNoteTests(ProjectNoteTests):
         note.write_text("# Notana Care\n")
         summary = self.summaries / "2026" / "summary-20261006-103207.md"
         summary.parent.mkdir()
-        metadata = pipeline.CustomerMetadata(
-            status="linked", confidence="high", rationale="", transcript_path=None,
-            model="summary", customer_name="Notana Care", customer_path=note,
-        )
-        link = pipeline.render_customer_metadata(summary, metadata)
-        self.assertIn("Notana%20Care.md", link)
+        summary.write_text(f"{pipeline.load_config().summary_header}\n\nBody.\n")
 
-        summary.write_text(f"{pipeline.load_config().summary_header} {link}\n\nBody.\n")
-        self.assertEqual(pipeline.parse_customer_metadata(summary).customer_path, note)
+        pipeline.write_customer_metadata(summary, "Notana Care", note)
+
+        self.assertIn("Notana%20Care.md", summary.read_text().splitlines()[0])
+        self.assertEqual(pipeline.summary_customer_link(summary), ("Notana Care", note))
 
 
 class EntryMatchingTests(ProjectNoteTests):

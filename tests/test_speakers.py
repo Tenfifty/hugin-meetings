@@ -237,18 +237,6 @@ def test_a_short_embedder_answer_aborts_the_update(tmp_path):
         speakers.update_cache(tmp_path / "speakers", events_dir, Dropping(), has_audio=all_audio)
 
 
-def test_a_pre_event_store_is_neither_overwritten_nor_built_over(tmp_path):
-    legacy = tmp_path / "speakers" / "alice"
-    legacy.mkdir(parents=True)
-    (legacy / "meta.json").write_text(json.dumps({"display_name": "Alice", "ready": True}))
-    np.save(legacy / "centroid.npy", np.ones(8))
-
-    assert speakers.cache_status(tmp_path / "speakers", tmp_path / "events")[0] == "legacy"
-    with pytest.raises(speakers.LegacySpeakerStore):
-        speakers.update_cache(tmp_path / "speakers", tmp_path / "events", FakeEmbedder(), has_audio=all_audio)
-    assert (legacy / "centroid.npy").exists()
-
-
 def test_transcribe_reads_the_cache(tmp_path, monkeypatch):
     _, speakers_dir, _ = build(tmp_path, [
         enroll("David Fendrich", "20260401-100000", "mic", spans(20)),
@@ -261,7 +249,8 @@ def test_transcribe_reads_the_cache(tmp_path, monkeypatch):
     assert transcribe.speaker_allowlist(None) == ["David Fendrich"]
     david = np.load(speakers_dir / "david_fendrich" / "centroid.npy")
     alice = np.load(speakers_dir / "alice_andersson" / "centroid.npy")
-    assert transcribe.match_speakers({"SPEAKER_0": david, "SPEAKER_1": alice}) == {
+    everyone = ["David Fendrich", "Alice Andersson", "Bob Berg"]
+    assert transcribe.match_speakers({"SPEAKER_0": david, "SPEAKER_1": alice}, everyone) == {
         "SPEAKER_0": "David Fendrich", "SPEAKER_1": "Alice Andersson",
     }
 

@@ -8,11 +8,6 @@ import json
 from pathlib import Path
 
 
-def load_transcribe_module():
-    from . import transcribe
-    return transcribe
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Transcribe a single recording part")
     parser.add_argument("--mic", required=True, help="Mic part opus file")
@@ -23,33 +18,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-part-suffix", action="store_true", help="Suffix anonymous speakers with the part id")
     parser.add_argument("--no-diarize", action="store_true", help="Skip diarization")
     parser.add_argument(
-        "--allowed-speakers",
+        "--allowed-speakers", required=True,
         help="JSON list of enrolled names this part may be labelled with "
-        "(from the session's calendar event). Omit to allow every ready speaker.",
-    )
-    parser.add_argument(
-        "--diarizer",
-        choices=("sortformer", "whisperx"),
-        default="sortformer",
-        help="Diarization backend",
+        "(from the session's calendar event); '[]' allows nobody.",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    transcribe_module = load_transcribe_module()
-    entries = transcribe_module.process_part(
+    from . import transcribe
+
+    entries = transcribe.process_part(
         Path(args.mic),
         Path(args.sys) if args.sys else None,
         part_index=args.part_index,
         use_part_suffix=args.use_part_suffix,
         language=args.language,
+        allowed_speakers=json.loads(args.allowed_speakers),
         do_diarize=not args.no_diarize,
-        diarizer_name=args.diarizer,
-        allowed_speakers=(
-            json.loads(args.allowed_speakers) if args.allowed_speakers is not None else None
-        ),
     )
     Path(args.json_out).write_text(json.dumps(entries, indent=2, ensure_ascii=False))
     return 0

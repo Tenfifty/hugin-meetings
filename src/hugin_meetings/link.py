@@ -18,15 +18,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from . import context as meeting_context
 from . import pipeline
 from .cli_utils import resolve_transcript_md
-from .config import load_config
-
-SUMMARY_DIR = load_config().summaries_dir
-
-
-def summary_path_for(ts: str) -> Path:
-    return SUMMARY_DIR / pipeline.year_subdir(ts) / f"summary-{ts}.md"
 
 
 def link_summary(summary_path: Path) -> str:
@@ -42,17 +36,16 @@ def link_summary(summary_path: Path) -> str:
     if not summary_path.exists():
         raise FileNotFoundError(f"No summary at {summary_path}")
 
-    state = pipeline.load_customer_state(ts, summary_path)
+    context = meeting_context.load_context(ts)
+    state = meeting_context.customer_state(context) if context is not None else None
     if state is None:
         return f"{ts}: no customer state — verify the session context first"
     if not state.verified:
         return f"{ts}: customer state is unverified ({state.label}), not publishing"
-    if state.action != "link_existing" or not state.customer_path:
+    if state.action != "link_existing" or not state.customer_name or not state.customer_path:
         return f"{ts}: no customer to publish to ({state.action})"
 
-    pipeline.write_customer_metadata(
-        summary_path, pipeline.metadata_from_state(summary_path, state)
-    )
+    pipeline.write_customer_metadata(summary_path, state.customer_name, state.customer_path)
     return f"{ts}: linked into {state.customer_path.name}"
 
 
@@ -72,10 +65,10 @@ def main() -> int:
         return 0
 
     if args.target and pipeline.extract_timestamp(args.target) == args.target:
-        summary = summary_path_for(args.target)
+        summary = pipeline.summary_md_path(args.target)
     else:
-        transcript = resolve_transcript_md(load_config().transcripts_dir, args.target)
-        summary = summary_path_for(pipeline.extract_timestamp(transcript.name))
+        transcript = resolve_transcript_md(args.target)
+        summary = pipeline.summary_md_path(pipeline.extract_timestamp(transcript.name))
 
     try:
         print(link_summary(summary))

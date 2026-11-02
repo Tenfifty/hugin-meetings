@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -148,15 +147,6 @@ class ResponseStatusTests(unittest.TestCase):
 
         self.assertEqual(calendar_match.event_self_response_status(event), "tentative")
 
-    def test_response_status_aliases_normalize_to_google_statuses(self) -> None:
-        self.assertEqual(calendar_match.normalize_response_status("yes"), "accepted")
-        self.assertEqual(calendar_match.normalize_response_status("maybe"), "tentative")
-        self.assertEqual(
-            calendar_match.normalize_response_status("not answered"),
-            "needsAction",
-        )
-        self.assertEqual(calendar_match.normalize_response_status("no"), "declined")
-
     def test_owned_non_invite_events_count_as_accepted(self) -> None:
         self.assertEqual(
             calendar_match.event_self_response_status({"organizer": {"self": True}}),
@@ -243,28 +233,30 @@ class ExternalAttendeeTests(unittest.TestCase):
         self.assertEqual(calendar_match.dedupe_candidates([declined, room]), [room, declined])
 
 
-class GwsErrorTests(unittest.TestCase):
-    # What gws printed on 2026-10-15, seven seconds after the lid closed.
-    OFFLINE = (
-        "Authentication failed: Failed to get token: Connection failure: Hyper error: "
-        "client error (Connect): dns error: failed to lookup address information"
-    )
+class GwsConfigTests(unittest.TestCase):
+    """The gws runner itself is tested in hugin (tests/test_gws.py); here only
+    that calendar_match hands it the meetings config, so gws_bin and
+    gws_config_dir from hugin.yaml pick the account."""
 
-    def run_gws_failing_with(self, stderr: str) -> None:
-        failed = subprocess.CompletedProcess(["gws"], 1, stdout="", stderr=stderr)
-        with patch.object(calendar_match.shutil, "which", return_value="/usr/bin/gws"), patch.object(
-            calendar_match.subprocess, "run", return_value=failed
-        ):
-            calendar_match.run_gws("calendar", "calendarList", "list")
+    def test_calls_use_the_loaded_config(self) -> None:
+        cfg = object()
+        with patch.object(calendar_match, "load_config", return_value=cfg), patch.object(
+            calendar_match, "run_gws", return_value={"items": []}
+        ) as run_gws:
+            calendar_match.list_calendars(None)
+        self.assertIs(run_gws.call_args.args[0], cfg)
 
-    def test_no_network_is_told_apart_so_it_can_be_retried(self) -> None:
-        with self.assertRaises(calendar_match.GwsOfflineError):
-            self.run_gws_failing_with(self.OFFLINE)
+        with patch.object(calendar_match, "load_config", return_value=cfg), patch.object(
+            calendar_match.gws, "run_gws", return_value={"items": [{"id": "e"}]}
+        ) as run_gws:
+            start = datetime(2026, 11, 2, 16, tzinfo=timezone.utc)
+            events = calendar_match.list_events("primary", start, start)
+        self.assertIs(run_gws.call_args.args[0], cfg)
+        self.assertEqual(events, [{"id": "e"}])
 
-    def test_a_refusal_is_not_mistaken_for_no_network(self) -> None:
-        with self.assertRaises(calendar_match.GwsError) as caught:
-            self.run_gws_failing_with("Authentication failed: invalid_grant")
-        self.assertNotIsInstance(caught.exception, calendar_match.GwsOfflineError)
+    def test_offline_error_is_still_reachable_here(self) -> None:
+        # context.py retries on calendar_match.GwsOfflineError.
+        self.assertTrue(issubclass(calendar_match.GwsOfflineError, calendar_match.GwsError))
 
 
 if __name__ == "__main__":

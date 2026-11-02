@@ -26,20 +26,17 @@ def test_set_message_collapses_multiline_errors_to_one_terminal_line() -> None:
     assert tui.message == "command failed | error detail"
 
 
-def make_status(context=None, customer_state=None):
+def make_status(context=None):
     from hugin_meetings import pipeline
 
     return pipeline.MeetingStatus(
         timestamp="20260824-140104",
-        mic_path=None,
-        sys_path=None,
         mic_parts=(),
         sys_parts=(),
         transcript_json=None,
         transcript_md=None,
         summary_md=None,
         calendar_fields={},
-        customer_state=customer_state,
         anonymous_speakers=[],
         context=context,
     )
@@ -69,28 +66,30 @@ def test_an_unverified_language_is_marked_unverified() -> None:
     assert make_tui().language_label(make_status(context=context)) == "sv?"
 
 
-def test_a_legacy_meeting_verified_by_its_customer_shows_a_plain_language() -> None:
-    from pathlib import Path
-
-    from hugin_meetings import pipeline
+def test_a_migrated_legacy_context_shows_no_language() -> None:
+    """Verified before langid existed: nothing was probed, so nothing is claimed."""
     from hugin_meetings.context import MeetingContext
 
-    state = pipeline.CustomerState(
-        action="link_existing",
-        confidence="high",
-        rationale="Confirmed in the old flow.",
-        model="gpt-5.6-luna",
-        verified=True,
-        customer_name="Helos",
-        customer_path=Path("/vault/kunder/Helos.md"),
-        source="auto",
-    )
+    context = MeetingContext(session_id="20260601-100000", verified=True)
+
+    assert make_tui().language_label(make_status(context=context)) == "-"
+
+
+def test_the_customer_column_shows_the_context_customer() -> None:
+    from hugin_meetings.context import MeetingContext
+
     context = MeetingContext(
-        session_id="20260824-130649", language={"value": "sv", "source": "langid"}
+        session_id="20260824-140104",
+        customer={"action": "link_existing", "customer_name": "Helos", "verified": False},
     )
 
-    label = make_tui().language_label(make_status(context=context, customer_state=state))
-    assert label == "sv"
+    assert make_tui().customer_label(make_status(context=context)) == "??Helos??"
+    assert make_tui().customer_label(make_status()) == "-"
+
+
+def test_vote_text_lists_the_counted_windows() -> None:
+    assert AudioTui.vote_text({"votes": {"sv": 3, "en": 1}}) == "sv x3, en x1"
+    assert AudioTui.vote_text({}) == ""
 
 
 def test_no_context_means_no_language_to_show() -> None:

@@ -23,9 +23,6 @@ SECTION_HEADER_RE = re.compile(r"^\s*##\s+<(?P<date>\d{4}-\d{2}-\d{2})\b")
 BRACE_TIME_RE = re.compile(
     r"\*(?P<ignored>~)?\{(?P<start>\d{1,2}[:.]\d{2})(?:\s*-\s*(?P<end>\d{1,2}[:.]\d{2}))?\}\*"
 )
-LEGACY_TIME_RE = re.compile(
-    r"\[(?P<start>\d{1,2}[:.]\d{2})(?:\s*-\s*(?P<end>\d{1,2}[:.]\d{2}))?\]"
-)
 AGENDA_ITEM_RE = re.compile(r"^- \[[ xX]\]\s*(?P<body>.+)$")
 
 
@@ -35,7 +32,6 @@ class ScheduledMeeting:
     title: str
     start_at: datetime
     end_at: datetime | None
-    source_line: str
 
     @property
     def time_label(self) -> str:
@@ -57,9 +53,7 @@ class StopPrompt:
     """
 
     key_base: str
-    due_at: datetime
     index: int
-    interval: timedelta = STOP_PROMPT_INTERVAL
     meeting: ScheduledMeeting | None = None
     started_at: datetime | None = None
 
@@ -73,7 +67,7 @@ class StopPrompt:
 
     @property
     def overdue(self) -> timedelta:
-        return self.index * self.interval
+        return self.index * STOP_PROMPT_INTERVAL
 
     @property
     def detail(self) -> str:
@@ -99,15 +93,12 @@ def _parse_clock(value: str):
 
 def _strip_time_markup(text: str) -> str:
     stripped = BRACE_TIME_RE.sub("", text)
-    stripped = LEGACY_TIME_RE.sub("", stripped)
     return " ".join(stripped.split()).strip()
 
 
 def load_todays_journal_meetings(
     journal_path: Path | None,
     today: date,
-    *,
-    max_meeting_duration: timedelta = MAX_MEETING_DURATION,
 ) -> list[ScheduledMeeting]:
     if journal_path is None or not journal_path.exists():
         return []
@@ -131,13 +122,7 @@ def load_todays_journal_meetings(
 
         body = item_match.group("body").strip()
         time_match = BRACE_TIME_RE.search(body)
-        ignored = False
-        if time_match:
-            ignored = bool(time_match.group("ignored"))
-        else:
-            time_match = LEGACY_TIME_RE.search(body)
-
-        if not time_match or ignored:
+        if not time_match or time_match.group("ignored"):
             continue
 
         start_time = _parse_clock(time_match.group("start"))
@@ -149,7 +134,7 @@ def load_todays_journal_meetings(
             end_at = datetime.combine(today, end_time)
             if end_at <= start_at:
                 continue
-            if end_at - start_at > max_meeting_duration:
+            if end_at - start_at > MAX_MEETING_DURATION:
                 continue
 
         title = _strip_time_markup(body)
@@ -163,7 +148,6 @@ def load_todays_journal_meetings(
                 title=title,
                 start_at=start_at,
                 end_at=end_at,
-                source_line=raw_line,
             )
         )
 
@@ -244,17 +228,11 @@ def associate_current_recording(
     now: datetime,
     *,
     is_recording: bool,
-    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
 ) -> ScheduledMeeting | None:
     if not is_recording or state.get("recording_meeting_key"):
         return None
 
-    candidates = [
-        meeting
-        for meeting in meetings
-        if 0 <= (now - meeting.start_at).total_seconds() <= grace_seconds
-        and (meeting.end_at is None or now <= meeting.end_at)
-    ]
+    candidates = [meeting for meeting in meetings if start_reminder_is_current(meeting, now)]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -264,7 +242,6 @@ def start_reminder_candidate(
     now: datetime,
     *,
     is_recording: bool,
-    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
 ) -> ScheduledMeeting | None:
     if is_recording:
         return None
@@ -274,20 +251,16 @@ def start_reminder_candidate(
         if meeting.key in prompted:
             continue
         age_seconds = (now - meeting.start_at).total_seconds()
-        if 0 <= age_seconds <= grace_seconds:
+        if 0 <= age_seconds <= START_PROMPT_GRACE_SECONDS:
             return meeting
     return None
 
 
-def first_stop_deadline(
-    meeting: ScheduledMeeting,
-    *,
-    open_ended_delay: timedelta = OPEN_ENDED_STOP_DELAY,
-) -> datetime:
+def first_stop_deadline(meeting: ScheduledMeeting) -> datetime:
     """When the recording for ``meeting`` first looks like it is running over."""
     if meeting.end_at is not None:
         return meeting.end_at
-    return meeting.start_at + open_ended_delay
+    return meeting.start_at + OPEN_ENDED_STOP_DELAY
 
 
 def _due_prompt(
@@ -295,7 +268,6 @@ def _due_prompt(
     first_due: datetime,
     now: datetime,
     *,
-    interval: timedelta,
     meeting: ScheduledMeeting | None = None,
     started_at: datetime | None = None,
 ) -> StopPrompt | None:
@@ -303,24 +275,16 @@ def _due_prompt(
         return None
     # Only the latest deadline is offered. Coming back to a recording that has
     # been running for hours should ask once, not once per missed interval.
-    interval = max(interval, timedelta(seconds=1))
-    index = int((now - first_due) // interval)
+    index = int((now - first_due) // STOP_PROMPT_INTERVAL)
     return StopPrompt(
         key_base=key_base,
-        due_at=first_due + index * interval,
         index=index,
-        interval=interval,
         meeting=meeting,
         started_at=started_at,
     )
 
 
-def start_reminder_is_current(
-    meeting: ScheduledMeeting,
-    now: datetime,
-    *,
-    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
-) -> bool:
+def start_reminder_is_current(meeting: ScheduledMeeting, now: datetime) -> bool:
     """Whether a start prompt answered at ``now`` still describes ``meeting``.
 
     A prompt can sit unanswered for hours. The yes that finally arrives is a
@@ -328,19 +292,14 @@ def start_reminder_is_current(
     recorded - tagging the recording with it would backdate the association.
     """
     age = (now - meeting.start_at).total_seconds()
-    if not 0 <= age <= grace_seconds:
+    if not 0 <= age <= START_PROMPT_GRACE_SECONDS:
         return False
     return meeting.end_at is None or now <= meeting.end_at
 
 
-def seconds_until_start_prompt_expires(
-    meeting: ScheduledMeeting,
-    now: datetime,
-    *,
-    grace_seconds: int = START_PROMPT_GRACE_SECONDS,
-) -> int:
+def seconds_until_start_prompt_expires(meeting: ScheduledMeeting, now: datetime) -> int:
     """How long a start prompt for ``meeting`` is still worth showing."""
-    deadline = meeting.start_at + timedelta(seconds=grace_seconds)
+    deadline = meeting.start_at + timedelta(seconds=START_PROMPT_GRACE_SECONDS)
     if meeting.end_at is not None:
         deadline = min(deadline, meeting.end_at)
     return max(1, int((deadline - now).total_seconds()))
@@ -353,19 +312,13 @@ def stop_reminder_candidate(
     *,
     is_recording: bool,
     recording_started_at: datetime | None = None,
-    interval: timedelta = STOP_PROMPT_INTERVAL,
-    open_ended_delay: timedelta = OPEN_ENDED_STOP_DELAY,
 ) -> StopPrompt | None:
     if not is_recording:
         return None
 
     meeting_key = state.get("recording_meeting_key")
     meeting = meeting_index.get(meeting_key) if meeting_key else None
-    first_due = (
-        first_stop_deadline(meeting, open_ended_delay=open_ended_delay)
-        if meeting is not None
-        else None
-    )
+    first_due = first_stop_deadline(meeting) if meeting is not None else None
 
     # An association can outlive the recording that earned it. A recording that
     # began after the meeting's deadline is not the one running over it, so the
@@ -375,21 +328,14 @@ def stop_reminder_candidate(
             meeting, first_due = None, None
 
     if meeting is not None:
-        prompt = _due_prompt(
-            meeting.key,
-            first_due,
-            now,
-            interval=interval,
-            meeting=meeting,
-        )
+        prompt = _due_prompt(meeting.key, first_due, now, meeting=meeting)
     elif recording_started_at is not None:
         # Nothing in the journal to end it, so the recording's own start is the
         # only anchor there is.
         prompt = _due_prompt(
             f"recording::{recording_started_at.isoformat(timespec='seconds')}",
-            recording_started_at + open_ended_delay,
+            recording_started_at + OPEN_ENDED_STOP_DELAY,
             now,
-            interval=interval,
             started_at=recording_started_at,
         )
     else:

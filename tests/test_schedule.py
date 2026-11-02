@@ -21,7 +21,7 @@ class JournalMeetingTests(unittest.TestCase):
                 "- [ ] *{09:00 - 09:30}* Yesterday\n"
                 "## <2026-04-24 Fri>\n"
                 "- [ ] *{09:00 - 09:30}* Morning sync\n"
-                "- [ ] [10.15-11.00] Legacy format\n"
+                "- [ ] *{10.15-11.00}* Dotted clock\n"
                 "- [ ] *~{12:00 - 12:30}* Ignored meeting\n"
                 "- [ ] *{13:00 - 18:30}* Too long\n",
                 encoding="utf-8",
@@ -29,7 +29,7 @@ class JournalMeetingTests(unittest.TestCase):
 
             meetings = schedule.load_todays_journal_meetings(journal, date(2026, 4, 24))
 
-        self.assertEqual([meeting.title for meeting in meetings], ["Morning sync", "Legacy format"])
+        self.assertEqual([meeting.title for meeting in meetings], ["Morning sync", "Dotted clock"])
         self.assertEqual(meetings[0].time_label, "09:00 - 09:30")
         self.assertEqual(meetings[1].start_at, datetime(2026, 4, 24, 10, 15))
 
@@ -41,7 +41,6 @@ class ReminderTests(unittest.TestCase):
             title="Planning",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="- [ ] *{10:00 - 10:30}* Planning",
         )
         state = schedule.default_reminder_state(date(2026, 4, 24))
 
@@ -94,7 +93,6 @@ class ReminderTests(unittest.TestCase):
             title="Planning",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="",
         )
         index = {meeting.key: meeting}
         state = schedule.set_recording_meeting(
@@ -116,7 +114,6 @@ class ReminderTests(unittest.TestCase):
             index, state, datetime(2026, 4, 24, 11, 0), is_recording=True
         )
         self.assertEqual(second.index, 1)
-        self.assertEqual(second.due_at, datetime(2026, 4, 24, 11, 0))
         self.assertEqual(
             second.detail, "Scheduled end: 10:30 - still recording, 30 min past due"
         )
@@ -127,7 +124,6 @@ class ReminderTests(unittest.TestCase):
             title="Planning",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="",
         )
         index = {meeting.key: meeting}
         state = schedule.set_recording_meeting(
@@ -154,7 +150,6 @@ class ReminderTests(unittest.TestCase):
             title="Open ended",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=None,
-            source_line="",
         )
         index = {meeting.key: meeting}
         state = schedule.set_recording_meeting(
@@ -245,7 +240,6 @@ class ReminderTests(unittest.TestCase):
             title="Planning",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 11, 0),
-            source_line="",
         )
         state = schedule.set_recording_meeting(
             schedule.default_reminder_state(date(2026, 4, 24)), meeting.key
@@ -274,7 +268,6 @@ class ReminderTests(unittest.TestCase):
             title="Vi snackar hostplan",
             start_at=datetime(2026, 8, 25, 9, 0),
             end_at=datetime(2026, 8, 25, 9, 45),
-            source_line="",
         )
         index = {meeting.key: meeting}
         state = schedule.set_recording_meeting(
@@ -314,7 +307,6 @@ class ReminderTests(unittest.TestCase):
             title="Planning",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="",
         )
         index = {meeting.key: meeting}
         state = schedule.set_recording_meeting(
@@ -341,7 +333,6 @@ class ReminderTests(unittest.TestCase):
             title="Vi snackar hostplan",
             start_at=datetime(2026, 8, 25, 9, 0),
             end_at=datetime(2026, 8, 25, 9, 45),
-            source_line="",
         )
 
         self.assertTrue(
@@ -361,7 +352,6 @@ class ReminderTests(unittest.TestCase):
             title="Long enough",
             start_at=datetime(2026, 8, 25, 9, 0),
             end_at=datetime(2026, 8, 25, 10, 0),
-            source_line="",
         )
         # Bounded by the 10-minute start grace.
         self.assertEqual(
@@ -374,7 +364,6 @@ class ReminderTests(unittest.TestCase):
             title="Shorter than the grace",
             start_at=datetime(2026, 8, 25, 9, 0),
             end_at=datetime(2026, 8, 25, 9, 5),
-            source_line="",
         )
         # A meeting that ends first bounds it instead.
         self.assertEqual(
@@ -393,14 +382,12 @@ class ReminderTests(unittest.TestCase):
             title="One",
             start_at=datetime(2026, 4, 24, 10, 0),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="",
         )
         second = schedule.ScheduledMeeting(
             key="m2",
             title="Two",
             start_at=datetime(2026, 4, 24, 10, 4),
             end_at=datetime(2026, 4, 24, 10, 30),
-            source_line="",
         )
         state = schedule.default_reminder_state(date(2026, 4, 24))
 
@@ -428,14 +415,12 @@ class ReminderTests(unittest.TestCase):
             title="Past",
             start_at=datetime(2026, 4, 24, 9, 0),
             end_at=datetime(2026, 4, 24, 9, 30),
-            source_line="",
         )
         upcoming = schedule.ScheduledMeeting(
             key="next",
             title="Next",
             start_at=datetime(2026, 4, 24, 11, 0),
             end_at=None,
-            source_line="",
         )
 
         self.assertEqual(

@@ -12,26 +12,30 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from hugin import gws
+# GwsOfflineError is re-exported: context.py retries on it.
+from hugin.gws import GwsError, GwsOfflineError, run_gws  # noqa: F401
+
 from .cli_utils import resolve_transcript_md
-from .pipeline import RawAudioSession, audio_duration, extract_timestamp, transcript_json_for_markdown
+from .pipeline import (
+    CALENDAR_METADATA_END,
+    CALENDAR_METADATA_START,
+    RawAudioSession,
+    audio_duration,
+    extract_timestamp,
+    metadata_block_re,
+    transcript_json_for_markdown,
+)
 from .config import load_config
 
-TRANSCRIPT_DIR = load_config().transcripts_dir
-METADATA_START = "<!-- calendar-metadata:start -->"
-METADATA_END = "<!-- calendar-metadata:end -->"
 SEGMENT_TS_RE = re.compile(r"\*\*\[(\d{2}):(\d{2}):(\d{2})\]")
-DEFAULT_GWS_CONFIG_DIR = load_config().gws_config_dir or (Path.home() / ".config" / "gws")
-DEFAULT_GWS_BIN = load_config().gws_bin
 
 DEFAULT_LOOKBACK = timedelta(hours=4)
 DEFAULT_LOOKAHEAD = timedelta(hours=6)
@@ -94,23 +98,9 @@ class Candidate:
         return external_attendees(self.event, self.calendar_id)
 
 
-class GwsError(RuntimeError):
-    pass
-
-
-class GwsOfflineError(GwsError):
-    """gws never reached Google: no network, not a refusal. Worth retrying."""
-
-
-# How gws (reqwest/hyper) words a request that never got an answer. An auth
-# refusal such as invalid_grant does not match, and retrying it would not help.
-OFFLINE_ERROR_RE = re.compile(
-    r"connection failure|dns error|client error \(connect\)|timed out", re.IGNORECASE
-)
-
-
-def resolve_transcript(name: str | None) -> Path:
-    return resolve_transcript_md(TRANSCRIPT_DIR, name).resolve()
+def session_start(ts: str) -> datetime:
+    """A session timestamp as local wall-clock time."""
+    return datetime.strptime(ts, "%Y%m%d-%H%M%S").replace(tzinfo=local_tzinfo())
 
 
 def transcript_start_from_name(path: Path) -> datetime:
@@ -119,7 +109,7 @@ def transcript_start_from_name(path: Path) -> datetime:
         raise GwsError(
             f"Could not infer transcript timestamp from filename: {path.name}"
         )
-    return datetime.strptime(ts, "%Y%m%d-%H%M%S").replace(tzinfo=local_tzinfo())
+    return session_start(ts)
 
 
 def transcript_duration(path: Path, text: str) -> timedelta:
@@ -154,7 +144,7 @@ def session_window(session: "RawAudioSession") -> MatchWindow:
     Duration is the summed wall clock of the parts of the longer channel;
     parts are recorded back to back, so their total is the meeting's length.
     """
-    start = datetime.strptime(session.session_id, "%Y%m%d-%H%M%S").replace(tzinfo=local_tzinfo())
+    start = session_start(session.session_id)
     seconds = max(
         sum(audio_duration(path) for path in session.mic_parts),
         sum(audio_duration(path) for path in session.sys_parts),
@@ -172,10 +162,10 @@ def match_window(
     include_shared: bool = False,
     lookback: timedelta = DEFAULT_LOOKBACK,
     lookahead: timedelta = DEFAULT_LOOKAHEAD,
-) -> tuple[list[Candidate], list[dict[str, Any]]]:
-    """Candidates for a window, best first, plus the calendars searched."""
+) -> list[Candidate]:
+    """Candidates for a window, best first."""
     calendars = list_calendars(calendar, include_shared)
-    return collect_candidates(window, calendars, lookback, lookahead), calendars
+    return collect_candidates(window, calendars, lookback, lookahead)
 
 
 def serialize_candidate(candidate: Candidate) -> dict[str, Any]:
@@ -226,15 +216,6 @@ def deserialize_window(payload: dict[str, Any]) -> MatchWindow:
     )
 
 
-def metadata_fields(block: str) -> dict[str, str]:
-    """A rendered block as key/value pairs — the shape the matcher prompt wants."""
-    from .pipeline import extract_metadata_block, parse_key_value_block
-
-    return parse_key_value_block(
-        extract_metadata_block(block, METADATA_START, METADATA_END)
-    )
-
-
 def stored_candidates(transcript_path: Path) -> tuple[list[Candidate], bool] | None:
     """The events a person already verified for this session, if any.
 
@@ -257,56 +238,6 @@ def stored_candidates(transcript_path: Path) -> tuple[list[Candidate], bool] | N
     if not context.calendar.get("candidates"):
         return None
     return meeting_context.ordered_candidates(context), meeting_context.event_chosen_by_hand(context)
-
-
-def gws_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    env.setdefault("GOOGLE_WORKSPACE_CLI_CONFIG_DIR", str(DEFAULT_GWS_CONFIG_DIR))
-    # Let gws use its encrypted store (credentials.enc) via the file keyring
-    # backend. Never point GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE at the
-    # plaintext credentials.json: gws prefers that file when the variable is
-    # set, and a stale refresh token in it produces a persistent invalid_grant
-    # that re-running `gws auth login` cannot fix (diagnosed 2026-06-27).
-    env.setdefault("GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "file")
-    return env
-
-
-def run_gws(*args: str) -> dict[str, Any]:
-    gws_bin = os.environ.get("HUGIN_GWS_BIN", DEFAULT_GWS_BIN)
-    if shutil.which(gws_bin) is None:
-        raise FileNotFoundError(gws_bin)
-
-    result = subprocess.run(
-        [gws_bin, *args],
-        capture_output=True,
-        text=True,
-        env=gws_environment(),
-    )
-
-    stdout = result.stdout.strip()
-    payload = None
-    if stdout:
-        try:
-            payload = json.loads(stdout)
-        except json.JSONDecodeError:
-            payload = None
-
-    if result.returncode != 0:
-        message = result.stderr.strip()
-        if isinstance(payload, dict) and "error" in payload:
-            message = payload["error"].get("message", message) or message
-        message = message or f"{gws_bin} {' '.join(args)} failed"
-        if OFFLINE_ERROR_RE.search(message):
-            raise GwsOfflineError(message)
-        raise GwsError(message)
-
-    if not isinstance(payload, dict):
-        raise GwsError(f"Unexpected {gws_bin} output for {' '.join(args)}")
-
-    if "error" in payload:
-        raise GwsError(payload["error"].get("message", "gws returned an error"))
-
-    return payload
 
 
 def is_owned_calendar(calendar: dict[str, Any]) -> bool:
@@ -339,6 +270,7 @@ def list_calendars(
         return [{"id": calendar_id, "summary": calendar_id, "primary": calendar_id == "primary"}]
 
     payload = run_gws(
+        load_config(),
         "calendar",
         "calendarList",
         "list",
@@ -364,65 +296,18 @@ def list_events(
     time_min: datetime,
     time_max: datetime,
 ) -> list[dict[str, Any]]:
-    payload = run_gws(
-        "calendar",
-        "events",
-        "list",
-        "--params",
-        json.dumps(
-            {
-                "calendarId": calendar_id,
-                "timeMin": time_min.isoformat(),
-                "timeMax": time_max.isoformat(),
-                "singleEvents": True,
-                "orderBy": "startTime",
-                "showDeleted": False,
-                "maxResults": 250,
-            }
-        ),
-    )
-    return payload.get("items", [])
-
-
-def parse_event_time(raw: dict[str, Any]) -> tuple[datetime | None, bool]:
-    if "dateTime" in raw:
-        value = raw["dateTime"].replace("Z", "+00:00")
-        return datetime.fromisoformat(value), False
-    if "date" in raw:
-        value = datetime.fromisoformat(raw["date"])
-        return value.replace(tzinfo=local_tzinfo()), True
-    return None, False
+    return gws.list_events(load_config(), calendar_id, time_min, time_max)
 
 
 def event_time_bounds(event: dict[str, Any]) -> tuple[datetime | None, datetime | None, bool]:
-    start, start_all_day = parse_event_time(event.get("start", {}))
-    end, end_all_day = parse_event_time(event.get("end", {}))
+    start, start_all_day = gws.parse_event_time(event.get("start", {}))
+    end, end_all_day = gws.parse_event_time(event.get("end", {}))
     return start, end, start_all_day or end_all_day
 
 
 def normalize_response_status(status: Any) -> str:
-    value = str(status or "").strip()
-    if value in RESPONSE_STATUS_PRIORITY:
-        return value
-    normalized = re.sub(r"[\s_-]+", "", value.lower())
-    aliases = {
-        "accept": "accepted",
-        "accepted": "accepted",
-        "yes": "accepted",
-        "tentative": "tentative",
-        "maybe": "tentative",
-        "needsaction": "needsAction",
-        "needaction": "needsAction",
-        "notanswered": "needsAction",
-        "noresponse": "needsAction",
-        "unanswered": "needsAction",
-        "decline": "declined",
-        "declined": "declined",
-        "no": "declined",
-    }
-    if normalized in aliases:
-        return aliases[normalized]
-    return "needsAction"
+    """Google sends only the four canonical values; anything else is unanswered."""
+    return status if status in RESPONSE_STATUS_PRIORITY else "needsAction"
 
 
 def event_self_response_status(event: dict[str, Any]) -> str:
@@ -706,12 +591,11 @@ def clean_description(text: str | None) -> str:
 def render_metadata(
     window: MatchWindow,
     candidates: list[Candidate],
-    searched_calendars: list[dict[str, Any]],
     *,
     chosen_by_hand: bool = False,
 ) -> str:
     lines = [
-        METADATA_START,
+        CALENDAR_METADATA_START,
         "## Calendar Metadata",
         f"- Transcript window: {format_dt(window.start)} to {format_dt(window.end)}",
     ]
@@ -765,16 +649,13 @@ def render_metadata(
                 f"- Match status: {confidence_label(best.score)} confidence (score {best.score:.1f})"
             )
 
-    lines.append(METADATA_END)
+    lines.append(CALENDAR_METADATA_END)
     return "\n".join(lines)
 
 
 def update_transcript_markdown(path: Path, metadata_block: str) -> str:
     text = path.read_text()
-    pattern = re.compile(
-        rf"{re.escape(METADATA_START)}.*?{re.escape(METADATA_END)}\n*",
-        re.DOTALL,
-    )
+    pattern = metadata_block_re(CALENDAR_METADATA_START, CALENDAR_METADATA_END)
     if pattern.search(text):
         updated = pattern.sub(metadata_block + "\n\n", text, count=1)
     else:
@@ -852,21 +733,21 @@ def main() -> int:
     args = parse_args()
 
     try:
-        transcript_path = resolve_transcript(args.transcript)
+        transcript_path = resolve_transcript_md(args.transcript).resolve()
         window = load_transcript(transcript_path)
         stored = None if args.rematch else stored_candidates(transcript_path)
         chosen_by_hand = False
         if stored is not None:
-            (candidates, chosen_by_hand), calendars = stored, []
+            candidates, chosen_by_hand = stored
         else:
-            candidates, calendars = match_window(
+            candidates = match_window(
                 window,
                 calendar=args.calendar,
                 include_shared=args.include_shared_calendars,
                 lookback=timedelta(hours=args.lookback_hours),
                 lookahead=timedelta(hours=args.lookahead_hours),
             )
-        metadata_block = render_metadata(window, candidates, calendars, chosen_by_hand=chosen_by_hand)
+        metadata_block = render_metadata(window, candidates, chosen_by_hand=chosen_by_hand)
     except GwsError as exc:
         print(str(exc), file=sys.stderr)
         return 1

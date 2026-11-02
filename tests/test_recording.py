@@ -53,7 +53,8 @@ def test_an_archived_part_is_never_replaced(tmp_path, caplog) -> None:
 
     assert existing.read_bytes() == b"first"
     assert track.current_file.exists()
-    assert "Could not move finished part" in caplog.text
+    # The failure is logged, not swallowed.
+    assert any(r.levelname == "ERROR" and r.exc_info for r in caplog.records)
 
 
 def test_leftover_parts_are_what_the_recording_dir_holds(tmp_path) -> None:

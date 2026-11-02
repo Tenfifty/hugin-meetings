@@ -1,6 +1,6 @@
 """Audio input route discovery.
 
-The current implementation targets Linux PipeWire/PulseAudio. Keeping it in
+The current implementation targets Linux PipeWire. Keeping it in
 core makes it reusable by any Linux frontend while leaving room for other
 platform-specific route providers later.
 """
@@ -26,24 +26,6 @@ def load_pipewire_nodes() -> list[dict] | None:
         return None
 
     return nodes if isinstance(nodes, list) else None
-
-
-def default_pulse_monitor_source() -> str:
-    """Return the PulseAudio/PipeWire monitor for the current default sink."""
-    try:
-        result = subprocess.run(
-            ["pactl", "get-default-sink"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        )
-    except Exception:
-        logging.info("Could not inspect PulseAudio default sink; using generic monitor fallback")
-        return DEFAULT_MONITOR_SOURCE
-
-    sink = result.stdout.strip()
-    return f"{sink}.monitor" if sink else DEFAULT_MONITOR_SOURCE
 
 
 def _metadata_name(value):
@@ -118,29 +100,27 @@ def resolve_default_monitor_source(nodes):
     return DEFAULT_MONITOR_SOURCE
 
 
-def get_default_audio_routes(log: bool = True) -> tuple[str, str]:
-    """Get the current mic and monitor sources for ffmpeg's pulse inputs."""
+def current_audio_routes() -> tuple[str, str] | None:
+    """The current mic and monitor sources, or None if PipeWire cannot be inspected."""
     nodes = load_pipewire_nodes()
     if nodes is None:
-        monitor_source = default_pulse_monitor_source()
-        if log:
-            logging.info(
-                "Falling back to PulseAudio routes: mic=%s sys=%s",
-                DEFAULT_PULSE_SOURCE,
-                monitor_source,
-            )
-        return DEFAULT_PULSE_SOURCE, monitor_source
+        return None
+    return resolve_default_audio_source(nodes), resolve_default_monitor_source(nodes)
 
-    mic_source = resolve_default_audio_source(nodes)
-    monitor_source = resolve_default_monitor_source(nodes)
-    if log:
-        logging.info("Using audio routes: mic=%s sys=%s", mic_source, monitor_source)
+
+def get_default_audio_routes() -> tuple[str, str]:
+    """Get the current mic and monitor sources for ffmpeg's pulse inputs."""
+    routes = current_audio_routes()
+    if routes is None:
+        # pw-dump failing means PipeWire, and pipewire-pulse with it, is down;
+        # there is no default sink to ask anyone else about.
+        logging.info(
+            "Falling back to generic routes: mic=%s sys=%s",
+            DEFAULT_PULSE_SOURCE,
+            DEFAULT_MONITOR_SOURCE,
+        )
+        return DEFAULT_PULSE_SOURCE, DEFAULT_MONITOR_SOURCE
+
+    mic_source, monitor_source = routes
+    logging.info("Using audio routes: mic=%s sys=%s", mic_source, monitor_source)
     return mic_source, monitor_source
-
-
-def get_default_audio_source() -> str:
-    return get_default_audio_routes()[0]
-
-
-def get_default_monitor_source() -> str:
-    return get_default_audio_routes()[1]

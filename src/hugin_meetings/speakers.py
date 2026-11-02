@@ -60,13 +60,14 @@ EVENT_TYPES = ("enroll", "remove_person", "remove_segments", "always_candidate")
 CHANNELS = ("mic", "sys")
 SESSION_RE = re.compile(r"^\d{8}-\d{6}$")
 
+# Which transcript segments say who is speaking, for enrollment and naming alike.
+MIN_SEGMENT_DURATION = 2.5    # seconds
+MAX_SEGMENT_DURATION = 30.0   # seconds (very long = likely misattributed)
+MIN_WORDS = 4                 # reject backchannels
+
 
 class EnrollmentError(RuntimeError):
     """An event, or the audio behind it, is not what the cache needs it to be."""
-
-
-class LegacySpeakerStore(EnrollmentError):
-    """``speakers/`` holds profiles written before enrollment events existed."""
 
 
 # --- Events ---
@@ -247,6 +248,19 @@ def resolve_person(people: dict[str, Person], name: str) -> Person:
     raise EnrollmentError(f"No enrolled speaker '{name}' (enrolled: {known})")
 
 
+def enrollable(segment: dict) -> bool:
+    """Long enough, short enough and wordy enough to say who is speaking."""
+    from .pipeline import is_backchannel
+
+    duration = segment.get("end", 0.0) - segment.get("start", 0.0)
+    if duration < MIN_SEGMENT_DURATION or duration > MAX_SEGMENT_DURATION:
+        return False
+    text = segment.get("text", "").strip()
+    if len(text.split()) < MIN_WORDS:
+        return False
+    return not is_backchannel(text)
+
+
 # --- Embedding ---
 
 class Embedder(Protocol):
@@ -413,21 +427,8 @@ def cosine_similarities(embeddings: np.ndarray, centroid: np.ndarray) -> np.ndar
 
 # --- Cache ---
 
-def is_legacy_store(speakers_dir: Path) -> bool:
-    """True if ``speakers_dir`` holds a profile that was not folded from events."""
-    if not speakers_dir.exists():
-        return False
-    return any(
-        d.is_dir() and not d.name.startswith(".")
-        and (d / "meta.json").exists() and not (d / "segments.json").exists()
-        for d in speakers_dir.iterdir()
-    )
-
-
 def cache_status(speakers_dir: Path, events_dir: Path, model_id: str = EMBEDDING_MODEL) -> tuple[str, str]:
-    """``("current" | "stale" | "legacy", reason)``. Reads no audio and loads no model."""
-    if is_legacy_store(speakers_dir):
-        return "legacy", f"{speakers_dir} holds profiles from before enrollment events"
+    """``("current" | "stale", reason)``. Reads no audio and loads no model."""
     try:
         stored = json.loads((speakers_dir / CACHE_FILE).read_text())
     except FileNotFoundError:
@@ -512,11 +513,6 @@ def update_cache(
     in the archive, cached or not: a session deleted from the archive needs a
     ``remove_segments`` event, not silence.
     """
-    if is_legacy_store(speakers_dir):
-        raise LegacySpeakerStore(
-            f"{speakers_dir} holds speaker profiles written before enrollment events. "
-            "Move it aside (see README, 'Enrolled speakers') before building the cache."
-        )
     fingerprint = events_fingerprint(events_dir)
     people = fold(load_events(events_dir))
     has_audio = has_audio or _real_audio_check()

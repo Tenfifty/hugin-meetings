@@ -12,19 +12,16 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from . import context as meeting_context
 from .cli_utils import resolve_summary_md
-from .config import load_config
 from .pipeline import (
-    PERSONAL_SECTION_HEADER,
-    SUMMARY_DIR,
-    TRANSCRIPT_DIR,
-    _strip_customer_header_link,
-    _strip_transcript_link,
     extract_timestamp,
-    load_customer_state,
     parse_calendar_metadata,
     read_project_frontmatter,
-    year_subdir,
+    summary_body,
+    summary_lead,
+    transcript_md_path,
+    without_personal_section,
 )
 
 _SLACK_API = "https://slack.com/api/"
@@ -131,40 +128,12 @@ def _md_to_mrkdwn(text: str) -> str:
     return text
 
 
-def _summary_body(summary_path: Path) -> str:
-    """Cleaned summary text: no header line, no transcript/customer links."""
-    text = _strip_transcript_link(_strip_customer_header_link(summary_path.read_text())).strip()
-    lines = text.splitlines()
-    if lines and lines[0].startswith(load_config().summary_header):
-        lines = lines[1:]
-    return "\n".join(lines).strip()
-
-
-def _strip_personal(body: str) -> str:
-    if not PERSONAL_SECTION_HEADER:
-        return body
-    pattern = re.compile(
-        rf"^{re.escape(PERSONAL_SECTION_HEADER)}\s*$.*?(?=^### |\Z)",
-        re.MULTILINE | re.DOTALL,
-    )
-    return re.sub(r"\n{3,}", "\n\n", pattern.sub("", body)).strip()
-
-
-def _lead(body: str) -> str:
-    """Text before the first ### subsection."""
-    lines: list[str] = []
-    for line in body.splitlines():
-        if line.strip().startswith("### "):
-            break
-        lines.append(line)
-    return "\n".join(lines).strip()
-
-
 def _get_slack_channel(summary_path: Path) -> str | None:
     ts = extract_timestamp(summary_path.name)
     if not ts:
         return None
-    state = load_customer_state(ts, summary_path)
+    context = meeting_context.load_context(ts)
+    state = meeting_context.customer_state(context) if context is not None else None
     if not state or not state.customer_path or not state.customer_path.exists():
         return None
     return read_project_frontmatter(state.customer_path).get("slack_channel")
@@ -213,17 +182,14 @@ def post_summary(summary_path: Path, channel: str | None = None) -> None:
     ts = extract_timestamp(summary_path.name) or ""
 
     # Calendar metadata lives in the transcript, not the summary
-    transcript_path: Path | None = None
-    if ts:
-        transcript_path = TRANSCRIPT_DIR / year_subdir(ts) / f"transcript-{ts}.md"
-    calendar_fields = parse_calendar_metadata(transcript_path)
+    calendar_fields = parse_calendar_metadata(transcript_md_path(ts) if ts else None)
 
     event = calendar_fields.get("Event") or ""
     title = event if event and event != "-" else f"Meeting {ts}"
 
-    body = _summary_body(summary_path)
-    lead_text = _lead(body)
-    thread_body = _strip_personal(body)
+    body = summary_body(summary_path)
+    lead_text = summary_lead(body)
+    thread_body = without_personal_section(body)
 
     abstract = _abstract_blocks(title, lead_text, calendar_fields)
     result = _api(token, "chat.postMessage", {
@@ -249,7 +215,7 @@ def main() -> None:
     parser.add_argument("--channel", help="Override Slack channel (default: from project frontmatter)")
     args = parser.parse_args()
 
-    summary_path = resolve_summary_md(SUMMARY_DIR, args.summary)
+    summary_path = resolve_summary_md(args.summary)
     post_summary(summary_path, channel=args.channel)
 
 

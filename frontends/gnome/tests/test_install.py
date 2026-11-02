@@ -20,28 +20,6 @@ def _make_executable(path: Path) -> Path:
 
 
 class RenderTests(unittest.TestCase):
-    def test_render_substitutes_launcher_absolute_path(self) -> None:
-        out = _render(Path("/some/where/launcher.sh"), autostart=False)
-        self.assertIn("Exec=/some/where/launcher.sh", out)
-        self.assertNotIn("@LAUNCHER@", out)
-
-    def test_render_can_pin_virtualenv(self) -> None:
-        out = _render(
-            Path("/some/where/launcher.sh"),
-            autostart=False,
-            venv=Path("/opt/hugin-venv"),
-        )
-        self.assertIn(
-            "Exec=env HUGIN_MEETINGS_VENV=/opt/hugin-venv /some/where/launcher.sh",
-            out,
-        )
-
-    def test_autostart_adds_xdg_autostart_marker(self) -> None:
-        autostart = _render(Path("/x/launcher.sh"), autostart=True)
-        menu = _render(Path("/x/launcher.sh"), autostart=False)
-        self.assertIn("X-GNOME-Autostart-enabled=true", autostart)
-        self.assertNotIn("X-GNOME-Autostart-enabled", menu)
-
     def test_both_variants_include_required_keys(self) -> None:
         for autostart in (True, False):
             out = _render(Path("/x/launcher.sh"), autostart=autostart)

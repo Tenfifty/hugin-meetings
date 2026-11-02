@@ -13,24 +13,6 @@ import pytest
 from hugin_meetings import transcribe as t
 
 
-def test_gpu_asr_starts_with_batch_four(monkeypatch):
-    calls = []
-
-    def run(audio, batch_size, language):
-        calls.append(batch_size)
-        return {"segments": []}
-
-    cuda = SimpleNamespace(empty_cache=lambda: None)
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
-    monkeypatch.setitem(sys.modules, "whisperx", SimpleNamespace(
-        load_audio=lambda path: path,
-        load_align_model=lambda **kwargs: (object(), {}),
-        align=lambda *args, **kwargs: {"segments": []},
-    ))
-    t.transcribe(Path("mic"), SimpleNamespace(transcribe=run), "cuda", "sv")
-    assert calls == [4]
-
-
 class FakeVadBase:
     pass
 
@@ -110,11 +92,11 @@ def test_lazy_import_traceback_does_not_pin_whisper(runtime, monkeypatch):
         return result
 
     wx.load_model = load
-    monkeypatch.setattr(t, '_activate_cuda_library_path', lambda: None)
     monkeypatch.setattr(t, '_cleanup_pcm_wav', lambda path: None)
     monkeypatch.setattr(t, 'load_alignment_model', lambda device, language: True)
     monkeypatch.setattr(t, 'align_transcription', align)
-    t.process_part(Path('mic'), None, part_index=1, use_part_suffix=False, language='sv', do_diarize=False)
+    t.process_part(Path('mic'), None, part_index=1, use_part_suffix=False, language='sv',
+        allowed_speakers=[], do_diarize=False)
     assert pinned
     assert loaded == [t.whisper_model_for('sv')]
 
@@ -210,8 +192,8 @@ def test_part_releases_whisper_before_alignment_and_keeps_devices_independent(ru
         references.append(weakref.ref(model))
         return model
     wx.load_model = load
-    monkeypatch.setattr(t, '_activate_cuda_library_path', lambda: None)
     monkeypatch.setattr(t, 'get_hf_token', lambda: None)
+    monkeypatch.setattr(t, '_ready_speaker_metas', lambda: [])
     monkeypatch.setattr(t, 'is_silent', lambda path: False)
     monkeypatch.setattr(t, '_cleanup_pcm_wav', lambda path: None)
     monkeypatch.setattr(t, 'cancel_echo', lambda mic, sys_, out: None)
@@ -224,26 +206,25 @@ def test_part_releases_whisper_before_alignment_and_keeps_devices_independent(ru
         return result
     monkeypatch.setattr(t, 'load_alignment_model', lambda device, language: True)
     monkeypatch.setattr(t, 'align_transcription', align)
-    def diarizer(name, device, token):
+    def diarizer(device):
         stages.append(('diarizer', device))
         return True
     monkeypatch.setattr(t, 'load_diarizer', diarizer)
     monkeypatch.setattr(t, 'diarize', lambda path, result, *args, **kwargs: result)
-    t.process_part(Path('mic'), Path('sys'), part_index=1, use_part_suffix=False, language='sv')
+    t.process_part(Path('mic'), Path('sys'), part_index=1, use_part_suffix=False, language='sv',
+        allowed_speakers=[])
     assert asr_calls == ['mic', 'sys']
     assert stages == [('align', 'mic', 'cuda'), ('align', 'mic', 'cpu'), ('align', 'sys', 'cpu'), ('diarizer', 'cuda')]
 
 
-def test_diarizer_load_skip_does_not_swallow_cpu_oom(runtime):
-    tracks = {'mic': (Path('mic'), {'segments': [{'text': 'kept'}]})}
-    def unavailable(device):
-        raise RuntimeError('missing token')
-    assert t._run_model_stage('diarization', tracks, 'cuda', unavailable, None,
-        skip_load_errors=True) == {'mic': tracks['mic'][1]}
-    def oom(device):
-        raise RuntimeError('out of memory')
-    with pytest.raises(RuntimeError, match='out of memory'):
-        t._run_model_stage('diarization', tracks, 'cpu', oom, None, skip_load_errors=True)
+def test_enrolled_speakers_without_a_token_fail_before_asr(runtime, monkeypatch):
+    """A missing token used to skip speaker naming silently."""
+    monkeypatch.setattr(t, 'get_hf_token', lambda: None)
+    monkeypatch.setattr(t, '_ready_speaker_metas', lambda: [(Path('alice'), {'name': 'Alice'})])
+    sys.modules['whisperx'].load_model = lambda *args, **kwargs: pytest.fail('ASR must not start')
+    with pytest.raises(RuntimeError, match='HuggingFace token'):
+        t.process_part(Path('mic'), None, part_index=1, use_part_suffix=False, language='sv',
+            allowed_speakers=[])
 
 
 def test_empty_alignment_does_not_load_model(runtime):

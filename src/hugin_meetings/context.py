@@ -30,12 +30,9 @@ from typing import Any
 
 from . import langid, pipeline
 from .config import load_config
+from .pipeline import context_path
 
 CONTEXT_VERSION = 1
-
-
-def context_path(ts: str) -> Path:
-    return load_config().transcript_json_dir / pipeline.year_subdir(ts) / f"context-{ts}.json"
 
 
 @dataclass
@@ -134,7 +131,7 @@ def verify(
     """Record a person's decision about a session, and act on it.
 
     This is the single write point for a verified meeting: it stamps the
-    context and materializes the customer state that every later stage reads.
+    context and materializes the customer that every later stage reads from it.
     Creating a customer note happens here, as the direct consequence of a
     person choosing to create one — never as a side effect further down.
 
@@ -153,7 +150,6 @@ def verify(
         customer.verified = True
         customer = pipeline.materialize_verified_customer_state(customer)
         context.customer = pipeline.serialize_customer_state(customer)
-        pipeline.save_customer_state(context.session_id, customer)
     mark_verified(context)
     save_context(context)
     return context
@@ -198,7 +194,7 @@ def _guess_calendar(
     while True:
         try:
             window = calendar_match.session_window(session)
-            candidates, _ = calendar_match.match_window(window)
+            candidates = calendar_match.match_window(window)
             break
         except calendar_match.GwsOfflineError as exc:
             if waited + delay > network_wait:
@@ -291,30 +287,29 @@ def calendar_block(context: "MeetingContext") -> str:
         return ""
     window = calendar_match.deserialize_window(payload["window"])
     return calendar_match.render_metadata(
-        window, ordered_candidates(context), [], chosen_by_hand=event_chosen_by_hand(context)
+        window, ordered_candidates(context), chosen_by_hand=event_chosen_by_hand(context)
     )
 
 
 def calendar_fields(context: "MeetingContext") -> dict[str, str]:
     """The event as key/value pairs, for the matcher prompt and for display."""
-    from . import calendar_match
-
     block = calendar_block(context)
-    return calendar_match.metadata_fields(block) if block else {}
+    return pipeline.calendar_metadata_fields(block) if block else {}
 
 
 def _guess_customer(fields: dict[str, str], model: str) -> tuple[dict[str, Any] | None, str]:
     if not fields:
         return None, "no calendar event to match on"
+    from . import matcher
+
     try:
-        decision = pipeline.suggest_customer_from_calendar(fields, model)
+        state = matcher.suggest_customer_from_calendar(fields, model)
     except FileNotFoundError as exc:
         # The matcher CLI is not on PATH. Common when a context guess is spawned
         # from a desktop session rather than a login shell - see llm.codex_bin.
         return None, f"matcher not found: {exc.filename or exc}"
     except Exception as exc:
         return None, f"customer guess failed: {exc}"
-    state = pipeline.state_from_decision(decision, source="calendar")
     return pipeline.serialize_customer_state(state), ""
 
 
@@ -346,19 +341,6 @@ def build_context(
         context.customer, context.customer_note = _guess_customer(
             calendar_fields(context), model or pipeline.DEFAULT_CUSTOMER_MODEL
         )
-    return context
-
-
-def ensure_context(ts: str, **kwargs: Any) -> MeetingContext:
-    """Load the session's context, building and saving one if it is missing."""
-    existing = load_context(ts)
-    if existing is not None:
-        return existing
-    session = pipeline.scan_raw_audio_sessions().get(ts)
-    if session is None:
-        raise FileNotFoundError(f"No raw audio for session {ts}")
-    context = build_context(session, **kwargs)
-    save_context(context)
     return context
 
 

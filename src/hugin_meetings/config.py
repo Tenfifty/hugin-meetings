@@ -37,7 +37,6 @@ class ProjectMatcherConfig:
     model: str = DEFAULT_REMOTE_MODEL
     effort: str = DEFAULT_PROJECT_MATCHER_EFFORT
     prompt_path: Path | None = None
-    json_system_prompt: str = "Return only valid JSON."
     inactive_dir_names: list[str] = field(default_factory=lambda: ["inactive", "inaktiva"])
 
     @classmethod
@@ -48,7 +47,6 @@ class ProjectMatcherConfig:
             model=data.get("model", DEFAULT_REMOTE_MODEL),
             effort=data.get("effort", DEFAULT_PROJECT_MATCHER_EFFORT),
             prompt_path=_opt_path(data.get("prompt_path")),
-            json_system_prompt=data.get("json_system_prompt", "Return only valid JSON."),
             inactive_dir_names=data.get("inactive_dir_names", ["inactive", "inaktiva"]),
         )
 
@@ -65,15 +63,6 @@ class MeetingsConfig(SharedConfig):
 
     # Transcription
     whisper_model: str = "large-v3"
-    compute_type: str = "float16"
-
-    # Local llama.cpp summarization tuning. ``summarize_n_gpu_layers``, if set,
-    # overrides the auto pick (-1 = all on GPU). Otherwise models larger than
-    # ``summarize_hybrid_threshold_gb`` load in hybrid mode with
-    # ``summarize_hybrid_n_gpu_layers`` layers on the GPU.
-    summarize_n_gpu_layers: int | None = None
-    summarize_hybrid_threshold_gb: float = 10.0
-    summarize_hybrid_n_gpu_layers: int = 10
 
     # Project/customer matching
     project_matcher: ProjectMatcherConfig = field(default_factory=ProjectMatcherConfig)
@@ -117,10 +106,6 @@ class MeetingsConfig(SharedConfig):
         return self.state_dir / "speakers"
 
     @property
-    def models_dir(self) -> Path:
-        return self.state_dir / "models"
-
-    @property
     def transcript_json_dir(self) -> Path:
         return self.state_dir / "transcripts"
 
@@ -142,10 +127,6 @@ class MeetingsConfig(SharedConfig):
             summaries_dir=_meet_path("summaries_dir", defaults.summaries_dir) or defaults.summaries_dir,
             state_dir=_meet_path("state_dir", defaults.state_dir) or defaults.state_dir,
             whisper_model=meetings.get("whisper_model", "large-v3"),
-            compute_type=meetings.get("compute_type", "float16"),
-            summarize_n_gpu_layers=meetings.get("summarize_n_gpu_layers"),
-            summarize_hybrid_threshold_gb=float(meetings.get("summarize_hybrid_threshold_gb", 10.0)),
-            summarize_hybrid_n_gpu_layers=int(meetings.get("summarize_hybrid_n_gpu_layers", 10)),
             project_matcher=ProjectMatcherConfig.from_dict(meetings.get("project_matcher", {})),
             llm=LLMConfig.from_dict(meetings.get("llm", {})),
             summary_model=meetings.get("summary_model", DEFAULT_REMOTE_MODEL),
@@ -159,8 +140,3 @@ class MeetingsConfig(SharedConfig):
 @lru_cache(maxsize=1)
 def load_config() -> MeetingsConfig:
     return load_tool("meetings", MeetingsConfig.from_merged)
-
-
-def reset_config_cache() -> None:
-    """For tests."""
-    load_config.cache_clear()

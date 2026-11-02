@@ -33,40 +33,24 @@ from .speakers import (
     EnrollmentError,
     PyannoteEmbedder,
     cosine_similarities,
+    enrollable,
     slugify,
 )
 from .pipeline import (
     TRANSCRIPT_JSON_DIR,
-    is_backchannel,
-    transcript_json_for_markdown,
+    extract_timestamp,
+    transcript_json_path,
 )
 from .config import load_config
 
-TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
 ENROLLMENTS_DIR = load_config().enrollments_dir
-
-# Segment filtering
-MIN_SEGMENT_DURATION = 2.5    # seconds
-MAX_SEGMENT_DURATION = 30.0   # seconds (very long = likely misattributed)
-MIN_WORDS = 4                 # reject backchannels
 
 # Embedding quality
 OUTLIER_THRESHOLD = 0.3       # reject segment if cosine to current centroid < this
 
 
 # --- Segment filtering ---
-
-def enrollable(entry: dict) -> bool:
-    """Long enough, short enough and wordy enough to say who is speaking."""
-    duration = entry["end"] - entry["start"]
-    if duration < MIN_SEGMENT_DURATION or duration > MAX_SEGMENT_DURATION:
-        return False
-    text = entry["text"].strip()
-    if len(text.split()) < MIN_WORDS:
-        return False
-    return not is_backchannel(text)
-
 
 def filter_segments(entries: list[dict], channel: str, speaker_label: str) -> list[dict]:
     """Filter segments for enrollment quality."""
@@ -106,29 +90,9 @@ def resolve_transcript(name: str | None) -> Path:
     path = Path(name)
     if path.exists():
         return path
-    md_json = transcript_json_for_markdown(TRANSCRIPT_DIR / path.name)
-    if md_json and md_json.exists():
-        return md_json
-    if (TRANSCRIPT_DIR / path).exists():
-        md_path = TRANSCRIPT_DIR / path
-        md_json = transcript_json_for_markdown(md_path)
-        if md_json and md_json.exists():
-            return md_json
-    if (TRANSCRIPT_DIR / f"transcript-{path}").exists():
-        md_path = TRANSCRIPT_DIR / f"transcript-{path}"
-        md_json = transcript_json_for_markdown(md_path)
-        if md_json and md_json.exists():
-            return md_json
-    if (TRANSCRIPT_JSON_DIR / path.name).exists():
-        return TRANSCRIPT_JSON_DIR / path.name
-    if (TRANSCRIPT_JSON_DIR / f"transcript-{path.name}").exists():
-        return TRANSCRIPT_JSON_DIR / f"transcript-{path.name}"
-    # Final fallback: YYYY/-nested lookup via rglob.
-    matches = list(TRANSCRIPT_JSON_DIR.rglob(path.name)) or list(
-        TRANSCRIPT_JSON_DIR.rglob(f"transcript-{path.name}")
-    )
-    if matches:
-        return matches[0]
+    ts = extract_timestamp(path.name)
+    if ts and transcript_json_path(ts).exists():
+        return transcript_json_path(ts)
     print(f"Transcript not found: {name}", file=sys.stderr)
     sys.exit(1)
 
@@ -250,19 +214,6 @@ def prompt_name(stdscr, speaker_label: str, h: int) -> str | None:
 
 # --- Enrollment logic ---
 
-def require_event_store() -> None:
-    """Refuse to write events while ``speakers/`` still holds pre-event profiles.
-
-    The first cache update would replace them with what the events say, and
-    until they are migrated the events say nothing.
-    """
-    if speakers.is_legacy_store(SPEAKERS_DIR):
-        raise EnrollmentError(
-            f"{SPEAKERS_DIR} still holds profiles from before enrollment events. "
-            "Migrate them first (see README, 'Enrolled speakers')."
-        )
-
-
 def update_cache(embedder: speakers.Embedder, force: bool = False) -> dict[str, speakers.Person]:
     return speakers.update_cache(SPEAKERS_DIR, ENROLLMENTS_DIR, embedder, force=force)
 
@@ -275,7 +226,6 @@ def do_enrollment(transcript_path: Path, assignments: list[tuple[str, str]]):
     """
     entries = json.loads(transcript_path.read_text())
     ts = transcript_path.stem.removeprefix("transcript-")
-    require_event_store()
     warn_names_not_invited(ts, [name for _, name in assignments])
 
     with PyannoteEmbedder() as embedder:
@@ -331,11 +281,9 @@ def warn_names_not_invited(session_id: str, names: list[str]) -> list[str]:
     the event has no attendee list — there is nothing to check against then.
     """
     from . import context as meeting_context
-    from .transcribe import attendee_matches_speaker, event_attendee_names
+    from .transcribe import attendee_matches_speaker, context_attendees
 
-    context = meeting_context.load_context(session_id)
-    candidate = meeting_context.best_candidate(context) if context else None
-    attendees = event_attendee_names(candidate.event) if candidate else []
+    attendees = context_attendees(meeting_context.load_context(session_id))
     if not attendees:
         return []
     missing = [
@@ -368,45 +316,14 @@ def update_transcript(transcript_path: Path, assignments: list[tuple[str, str]])
             changed += 1
 
     transcript_path.write_text(json.dumps(entries, indent=2, ensure_ascii=False))
-
-    # Update markdown
-    md_path = transcript_path.with_suffix(".md")
-    if md_path.exists():
-        ts = transcript_path.stem.removeprefix("transcript-")
-        md_path.write_text(_format_transcript(entries, ts))
-
     print(f"\nUpdated transcript: renamed {changed} segment(s) in {transcript_path.name}")
-
-
-def _fmt_time(seconds: float) -> str:
-    m, s = divmod(int(seconds), 60)
-    h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}"
-
-
-def _format_transcript(entries: list[dict], ts: str) -> str:
-    """Format entries as readable markdown (mirrors transcribe.py)."""
-    lines = [f"# Transcript {ts}", ""]
-    prev_speaker = None
-    prev_channel = None
-    for e in entries:
-        tag = f"{e['channel']}:{e['speaker']}"
-        if tag != f"{prev_channel}:{prev_speaker}":
-            start_fmt = _fmt_time(e["start"])
-            lines.append(f"\n**[{start_fmt}] {tag}**\n")
-            prev_speaker = e["speaker"]
-            prev_channel = e["channel"]
-        lines.append(e["text"])
-    return "\n".join(lines) + "\n"
 
 
 # --- CLI ---
 
 def list_speakers():
     status, reason = speakers.cache_status(SPEAKERS_DIR, ENROLLMENTS_DIR)
-    if status == "legacy":
-        print(f"({reason}; not yet migrated to enrollment events)")
-    elif status == "stale":
+    if status == "stale":
         print(f"(cache out of date: {reason}; run hugin-meet-enroll --update-cache)")
     names = [
         d for d in sorted(SPEAKERS_DIR.iterdir()) if d.is_dir() and (d / "meta.json").exists()
@@ -422,8 +339,7 @@ def list_speakers():
         status = "ready" if ready else f"need {max(0, MIN_READY_SEGMENTS - total)} more"
         sources = meta.get("sources", [])
         source_str = ", ".join(
-            f"{s['channel']}-{s['session']}" if "session" in s else s.get("file", "?")
-            for s in sources[-3:]
+            f"{s['channel']}-{s['session']}" for s in sources[-3:]
         )
         always = "  [always a candidate]" if meta.get("always_candidate") else ""
         print(f"  {display:20s}  {total:3d} segments  ({status})  from: {source_str}{always}")
@@ -441,7 +357,6 @@ def _write_and_update(event: dict) -> None:
 
 
 def remove_speaker(name: str):
-    require_event_store()
     person = speakers.resolve_person(_current_people(), name)
     _write_and_update({"type": "remove_person", "name": person.name, "slug": person.slug})
     print(f"Removed '{person.name}'")
@@ -458,7 +373,6 @@ def parse_span(text: str) -> dict:
 
 def remove_session(name: str, session: str, channel: str | None, spans: list[dict] | None):
     """Drop a person's segments from one session, or only those overlapping ``spans``."""
-    require_event_store()
     people = _current_people()
     person = speakers.resolve_person(people, name)
     event = {
@@ -483,7 +397,6 @@ def set_always_candidate(name: str, value: bool):
     attendee list in a useful way, and a meeting with no attendee list at all
     would otherwise have no candidates.
     """
-    require_event_store()
     person = speakers.resolve_person(_current_people(), name)
     if person.always_candidate != value:
         _write_and_update({

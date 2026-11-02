@@ -79,6 +79,7 @@ class AudioRecorder:
         self.prompt_open = False
         self.journal_monitor = None
         self.journal_reload_timer = None
+        self.segment_timer = None
 
         self.indicator = AyatanaAppIndicator3.Indicator.new(
             "hugin-recorder",
@@ -182,10 +183,11 @@ class AudioRecorder:
             self._teardown_recording()
             raise
 
-        for track in self.session.tracks:
-            track.segment_timer = GLib.timeout_add_seconds(
-                SEGMENT_MINUTES * 60, track.rotate_segment
-            )
+        # One timer for the session, not one per track: session.rotate keeps
+        # the two tracks' part numbers aligned.
+        self.segment_timer = GLib.timeout_add_seconds(
+            SEGMENT_MINUTES * 60, self._rotate_segment
+        )
 
         self.toggle_item.set_label("Stop Recording")
         if meeting_key:
@@ -195,29 +197,31 @@ class AudioRecorder:
             self._maybe_associate_current_recording(datetime.now())
         self._update_icon()
 
-    def _current_audio_routes(self):
-        nodes = audio_routes.load_pipewire_nodes()
-        if nodes is None:
-            return None
-        return (
-            audio_routes.resolve_default_audio_source(nodes),
-            audio_routes.resolve_default_monitor_source(nodes),
-        )
-
     def _stop_recording(self):
         if not self.is_recording:
             return
         self._teardown_recording()
 
     def _teardown_recording(self):
-        for track in self.session.tracks:
-            if track.segment_timer:
-                GLib.source_remove(track.segment_timer)
-                track.segment_timer = None
+        if self.segment_timer:
+            GLib.source_remove(self.segment_timer)
+            self.segment_timer = None
         self.session.stop()
         self.toggle_item.set_label("Start Recording")
         self._clear_recording_meeting()
         self._update_icon()
+
+    def _rotate_segment(self):
+        try:
+            self.session.rotate()
+        except Exception:
+            logging.exception("Failed to rotate recording to its next part")
+            # The timer source ends with this return; teardown must not remove it.
+            self.segment_timer = None
+            self._teardown_recording()
+            self.status_item.set_label("Recorder error while rotating")
+            return False
+        return True
 
     def _rotate_recording_to_sources(self, mic_source, system_source):
         logging.info(
@@ -240,7 +244,7 @@ class AudioRecorder:
         try:
             if not self.is_recording:
                 return True
-            current_routes = self._current_audio_routes()
+            current_routes = audio_routes.current_audio_routes()
             if current_routes is None:
                 return True
             mic_source, system_source = current_routes
@@ -485,15 +489,9 @@ class AudioRecorder:
             f"exec {shlex.quote(USER_SHELL)} -i"
         )
         env = os.environ.copy()
+        # The snap GTK variables are already unset by launcher.sh, the only way
+        # the tray is started.
         for var in (
-            "GDK_PIXBUF_MODULEDIR",
-            "GDK_PIXBUF_MODULE_FILE",
-            "GIO_MODULE_DIR",
-            "GSETTINGS_SCHEMA_DIR",
-            "GTK_EXE_PREFIX",
-            "GTK_IM_MODULE_FILE",
-            "GTK_PATH",
-            "LOCPATH",
             # Name the terminal tab the tray was started from. gnome-terminal
             # opens the new window relative to it and fails outright once that
             # tab is closed (2026-10-15).

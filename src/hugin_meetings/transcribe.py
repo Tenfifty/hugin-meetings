@@ -31,18 +31,17 @@ from .pipeline import (
     SPEAKER_RE,
     audio_duration,
     extract_timestamp,
-    is_backchannel,
     parse_raw_audio_part,
     raw_audio_session,
     scan_in_progress_parts,
     scan_raw_audio_sessions,
     transcript_json_path,
+    transcript_md_path,
 )
 from .config import load_config
 
 AUDIO_DIR = load_config().raw_audio_dir
 WAV_CACHE_DIR = load_config().wav_cache_dir
-TRANSCRIPT_DIR = load_config().transcripts_dir
 SPEAKERS_DIR = load_config().speakers_dir
 MODEL = load_config().whisper_model
 
@@ -80,16 +79,25 @@ ALIGN_MODELS = {
     **(load_config().raw.get("meetings", {}).get("transcribe_align_models") or {}),
 }
 
-# Sortformer finds turns; sortformer.py re-decides who is who by voice. It
-# replaced NeMo's MSDD, which NeMo 3 removed and which OOMed on long parts.
-DEFAULT_DIARIZER = "sortformer"
-DIARIZERS = ("sortformer", "whisperx")
 SILENCE_THRESHOLD_DB = -40
 SILENCE_MIN_DURATION = 0.99  # fraction of total duration that must be silent
 SPEAKER_MATCH_THRESHOLD = 0.6  # cosine to an enrolled centroid; two enrolled women sit 0.53 apart, so 0.5 did not separate same-sex speakers
-MIN_ID_SEGMENT_DURATION = 2.5
-MAX_ID_SEGMENT_DURATION = 30.0
-MIN_ID_WORDS = 4
+
+
+def _exception_chain(exc: BaseException):
+    """``exc`` and everything in its cause/context chain, each once.
+
+    Guards against cycles in library exception chains.
+    """
+    pending = [exc]
+    seen = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
 
 def _is_oom(exc: BaseException) -> bool:
@@ -106,21 +114,14 @@ def _is_oom(exc: BaseException) -> bool:
 
     # Pyannote wraps CUDA OOM in a plain MemoryError about VAD batch size.
     # Inspect the original exception, rather than treating every host-memory
-    # failure as a GPU OOM. Guard against cycles in library exception chains.
-    pending = [exc]
-    seen = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
+    # failure as a GPU OOM.
+    for current in _exception_chain(exc):
         if isinstance(current, torch.OutOfMemoryError):
             return True
         if isinstance(current, RuntimeError):
             msg = str(current)
             if "out of memory" in msg.lower() or ("nvmlInit" in msg and "CUDACachingAllocator" in msg):
                 return True
-        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
     return False
 
 
@@ -133,15 +134,8 @@ def _release_oom_traceback(exc: BaseException) -> None:
     ``empty_cache()`` free nothing and the GPU stays pinned for the entire slow
     CPU run — measured at 7.6 GB of 8 GB retained with the GPU fully idle.
     """
-    pending = [exc]
-    seen = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
+    for current in _exception_chain(exc):
         current.__traceback__ = None
-        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
 
 
 @contextmanager
@@ -191,9 +185,13 @@ def _cuda_library_dirs() -> list[Path]:
     return [path for path in candidates if path.exists()]
 
 
-def _with_cuda_library_path(env: dict[str, str] | None = None) -> dict[str, str]:
-    """Prepend venv/user-site NVIDIA libs so CTranslate2 can dlopen CUDA deps."""
-    merged = dict(os.environ if env is None else env)
+def _with_cuda_library_path() -> dict[str, str]:
+    """Prepend venv/user-site NVIDIA libs so CTranslate2 can dlopen CUDA deps.
+
+    For a child's environment: ld.so reads LD_LIBRARY_PATH only at process
+    start, so setting it in a running process changes nothing.
+    """
+    merged = dict(os.environ)
     cuda_dirs = [str(path) for path in _cuda_library_dirs()]
     if not cuda_dirs:
         return merged
@@ -201,10 +199,6 @@ def _with_cuda_library_path(env: dict[str, str] | None = None) -> dict[str, str]
     existing = [part for part in merged.get("LD_LIBRARY_PATH", "").split(":") if part]
     merged["LD_LIBRARY_PATH"] = ":".join([*cuda_dirs, *existing])
     return merged
-
-
-def _activate_cuda_library_path() -> None:
-    os.environ.update(_with_cuda_library_path())
 
 
 def is_silent(path: Path) -> bool:
@@ -402,7 +396,7 @@ def align_transcription(audio_path: Path, result: dict, device: str, alignment_m
 
 def _run_model_stage(
     phase: str, tracks: dict, device: str, load_model, run,
-    *, skip_load_errors: bool = False, skip_empty: bool = False,
+    *, skip_empty: bool = False,
 ) -> dict:
     """Load one stage, reuse its model, and retry only that stage on CPU.
 
@@ -435,11 +429,7 @@ def _run_model_stage(
                         print(f"    {phase}: completed {path.name}, segments={len(results[channel].get('segments', []))}", flush=True)
                     break
                 except Exception as exc:
-                    oom = _is_oom(exc)
-                    if skip_load_errors and operation == "load" and isinstance(exc, RuntimeError) and not oom:
-                        print(f"  Skipping {phase} ({exc})")
-                        return {name: results.get(name, previous) for name, (_, previous) in tracks.items()}
-                    if device != "cuda" or not oom:
+                    if device != "cuda" or not _is_oom(exc):
                         raise
                     _log_oom(exc, f"{phase}:{operation}:{path.name}")
                     model = None
@@ -503,102 +493,33 @@ def _cleanup_pcm_wav(audio_path: Path | None) -> None:
 
 
 
-def load_pyannote_embedding_model(hf_token: str, device: str):
-    """Load pyannote's speaker embedding model for post-hoc speaker naming."""
-    import torch
-    from pyannote.audio import Pipeline
+# Sortformer finds turns; sortformer.py re-decides who is who by voice. It
+# replaced NeMo's MSDD, which NeMo 3 removed and which OOMed on long parts.
+def load_diarizer(device: str):
+    from .sortformer import SortformerDiarizer
 
-    from .speakers import EMBEDDING_MODEL
-
-    # The same model the enrolled centroids were embedded with (speakers.py).
-    pipeline = Pipeline.from_pretrained(EMBEDDING_MODEL, token=hf_token).to(torch.device(device))
-    return pipeline._embedding
-
-
-def load_diarizer(diarizer_name: str, device: str, hf_token: str | None):
-    """Load the requested diarization backend."""
-    if diarizer_name == "sortformer":
-        from .sortformer import SortformerDiarizer
-
-        return SortformerDiarizer(device)
-
-    if diarizer_name == "whisperx":
-        from whisperx.diarize import DiarizationPipeline
-
-        if not hf_token:
-            raise RuntimeError("WhisperX diarization requires a HuggingFace token.")
-        return DiarizationPipeline(token=hf_token, device=device)
-
-    raise ValueError(f"Unknown diarizer: {diarizer_name}")
-
-
-def _filter_segments_for_identification(segments: list[dict], speaker_label: str) -> list[dict]:
-    candidates = []
-    for seg in segments:
-        if seg.get("speaker") != speaker_label:
-            continue
-        duration = seg.get("end", 0.0) - seg.get("start", 0.0)
-        if duration < MIN_ID_SEGMENT_DURATION or duration > MAX_ID_SEGMENT_DURATION:
-            continue
-        text = seg.get("text", "").strip()
-        if len(text.split()) < MIN_ID_WORDS:
-            continue
-        if is_backchannel(text):
-            continue
-        candidates.append(seg)
-    return candidates
-
-
-def extract_segment_embeddings(
-    audio_path: Path, segments: list[dict], emb_model, device: str
-) -> np.ndarray:
-    """Extract one pyannote embedding per segment."""
-    import numpy as np
-    import torch
-    import torchaudio
-
-    waveform, sr = torchaudio.load(str(audio_path))
-    if sr != 16000:
-        waveform = torchaudio.functional.resample(waveform, sr, 16000)
-        sr = 16000
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
-
-    embeddings = []
-    for seg in segments:
-        start_sample = int(seg["start"] * sr)
-        end_sample = int(seg["end"] * sr)
-        chunk = waveform[:, start_sample:end_sample]
-        if chunk.shape[1] < emb_model.min_num_samples:
-            continue
-        chunk = chunk.unsqueeze(0).to(device)
-        with torch.no_grad():
-            emb = emb_model(chunk)
-        if isinstance(emb, np.ndarray):
-            embeddings.append(emb.squeeze())
-        else:
-            embeddings.append(emb.squeeze().cpu().numpy())
-
-    return np.array(embeddings) if embeddings else np.empty((0, 256))
+    return SortformerDiarizer(device)
 
 
 def build_speaker_centroids_from_result(
     audio_path: Path, result: dict, emb_model, device: str
 ) -> dict[str, list[float]]:
     """Build one pyannote centroid per anonymous speaker label in the result."""
+    from .speakers import embed_waveform_segments, enrollable, load_waveform
+
     by_speaker = {}
     for seg in result.get("segments", []):
         speaker = seg.get("speaker")
-        if not speaker or speaker == "unknown":
+        if not speaker or speaker == "unknown" or not enrollable(seg):
             continue
         by_speaker.setdefault(speaker, []).append(seg)
+    if not by_speaker:
+        return {}
 
+    waveform = load_waveform(audio_path)
     centroids = {}
     for speaker, segments in by_speaker.items():
-        candidates = _filter_segments_for_identification(segments, speaker)
-        if not candidates:
-            continue
-        embeddings = extract_segment_embeddings(audio_path, candidates, emb_model, device)
+        embeddings = embed_waveform_segments(waveform, segments, emb_model, device)
         if len(embeddings) == 0:
             continue
         centroids[speaker] = embeddings.mean(axis=0).tolist()
@@ -626,7 +547,7 @@ def apply_enrolled_speaker_names(
     result: dict | None,
     emb_model,
     device: str,
-    allowed_speakers: Iterable[str] | None = None,
+    allowed_speakers: Iterable[str],
 ) -> dict | None:
     if result is None:
         return None
@@ -640,125 +561,33 @@ def apply_enrolled_speaker_names(
     return result
 
 
-def diarize(
-    audio_path: Path,
-    result: dict,
-    device: str,
-    diarizer_name: str,
-    diarizer_model,
-    hf_token: str | None,
-    speaker_id_model=None,
-    allowed_speakers: Iterable[str] | None = None,
-) -> dict:
-    """Add speaker labels to transcription result using the selected diarizer.
-
-    ``allowed_speakers`` restricts which enrolled names a label may become;
-    see ``speaker_allowlist``. ``None`` means every ready speaker.
-    """
+def diarize(audio_path: Path, result: dict, device: str, diarizer_model) -> dict:
+    """Add Sortformer's speaker labels to the words of a transcription result."""
     if not result.get("segments"):
         print("    Skipping diarization: transcript has no segments")
         return result
 
-    if diarizer_name == "sortformer":
-        from whisperx.diarize import assign_word_speakers
-
-        wav_path = _ensure_pcm_wav(audio_path)
-        print(
-            f"    {diarizer_name} input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
-            f"device={device} {_cuda_memory_stats()}", flush=True,
-        )
-        segments = diarizer_model(str(wav_path))
-        if not segments:
-            # The diarizer heard no speech, so what Whisper produced for this
-            # track is a hallucination on noise ("Undertexter från
-            # Amara.org-gemenskapen"). Log the dropped text as evidence.
-            dropped = [seg.get("text", "").strip() for seg in result["segments"]]
-            print(
-                f"    {diarizer_name} found no speech in {audio_path.name}; "
-                f"dropping {len(dropped)} ASR segment(s): {dropped}", flush=True,
-            )
-            return {**result, "segments": [], "word_segments": []}
-        diarization = _segments_to_df(segments)
-        print(f"    {diarizer_name} output speakers={diarization['speaker'].nunique()}", flush=True)
-        result = assign_word_speakers(diarization, result)
-        if speaker_id_model is not None:
-            embeddings = build_speaker_centroids_from_result(
-                wav_path, result, speaker_id_model, device
-            )
-            if embeddings:
-                name_map = match_speakers(embeddings, allowed_speakers)
-                if name_map:
-                    print(f"    Speaker matches: {name_map}")
-                    result = _rename_result_speakers(result, name_map)
-        return result
-
-    if diarizer_name != "whisperx":
-        raise ValueError(f"Unknown diarizer: {diarizer_name}")
-
     from whisperx.diarize import assign_word_speakers
-    import whisperx
 
-    audio = whisperx.load_audio(str(audio_path))
-    diarize_segments, embeddings = diarizer_model(audio, return_embeddings=True)
-    result = assign_word_speakers(diarize_segments, result)
-
-    # Match anonymous speakers against enrolled voices
-    if embeddings:
-        name_map = match_speakers(embeddings, allowed_speakers)
-        if name_map:
-            print(f"    Speaker matches: {name_map}")
-            for seg in result.get("segments", []):
-                spk = seg.get("speaker", "")
-                if spk in name_map:
-                    seg["speaker"] = name_map[spk]
-
-    return result
-
-
-def resegment_by_speaker(segments: list[dict]) -> list[dict]:
-    """Split segments at word-level speaker boundaries.
-
-    WhisperX assigns speakers per word but keeps Whisper's original segments
-    (split on pauses). When two speakers talk without a pause, the whole segment
-    gets the dominant speaker's label. This function splits such segments so each
-    contiguous run of words from one speaker becomes its own segment.
-    """
-    new_segments = []
-    for seg in segments:
-        words = seg.get("words", [])
-        if not words:
-            new_segments.append(seg)
-            continue
-
-        # Group consecutive words by speaker
-        current_speaker = None
-        current_words = []
-        for word in words:
-            word_speaker = word.get("speaker", seg.get("speaker", "unknown"))
-            if word_speaker != current_speaker and current_words:
-                new_segments.append(_words_to_segment(current_words, current_speaker))
-                current_words = []
-            current_speaker = word_speaker
-            current_words.append(word)
-
-        if current_words:
-            new_segments.append(_words_to_segment(current_words, current_speaker))
-
-    return new_segments
-
-
-def _words_to_segment(words: list[dict], speaker: str) -> dict:
-    """Build a segment dict from a list of word dicts."""
-    text = " ".join(w.get("word", "") for w in words).strip()
-    start = words[0].get("start", words[0].get("end", 0.0))
-    end = words[-1].get("end", words[-1].get("start", 0.0))
-    return {
-        "start": start,
-        "end": end,
-        "text": text,
-        "speaker": speaker,
-        "words": words,
-    }
+    wav_path = _ensure_pcm_wav(audio_path)
+    print(
+        f"    sortformer input={audio_path.name} duration_s={audio_duration(wav_path):.1f} "
+        f"device={device} {_cuda_memory_stats()}", flush=True,
+    )
+    segments = diarizer_model(str(wav_path))
+    if not segments:
+        # The diarizer heard no speech, so what Whisper produced for this
+        # track is a hallucination on noise ("Undertexter från
+        # Amara.org-gemenskapen"). Log the dropped text as evidence.
+        dropped = [seg.get("text", "").strip() for seg in result["segments"]]
+        print(
+            f"    sortformer found no speech in {audio_path.name}; "
+            f"dropping {len(dropped)} ASR segment(s): {dropped}", flush=True,
+        )
+        return {**result, "segments": [], "word_segments": []}
+    diarization = _segments_to_df(segments)
+    print(f"    sortformer output speakers={diarization['speaker'].nunique()}", flush=True)
+    return assign_word_speakers(diarization, result)
 
 
 AMBIGUITY_GAP = 0.1  # reject if gap between best and second-best < this
@@ -844,6 +673,14 @@ def event_attendee_names(event: dict) -> list[str]:
     return names
 
 
+def context_attendees(context) -> list[str]:
+    """Attendees of the session's verified calendar event; [] without one."""
+    from . import context as meeting_context
+
+    candidate = meeting_context.best_candidate(context) if context is not None else None
+    return event_attendee_names(candidate.event) if candidate else []
+
+
 def speaker_allowlist(context) -> list[str]:
     """Enrolled names a transcript of this session may be labelled with.
 
@@ -858,8 +695,6 @@ def speaker_allowlist(context) -> list[str]:
     Speakers whose meta has ``always_candidate: true`` (David) are candidates
     regardless. With no attendee list to go on, only those are.
     """
-    from . import context as meeting_context
-
     always = []
     others = []
     for _, meta in _ready_speaker_metas():
@@ -868,8 +703,7 @@ def speaker_allowlist(context) -> list[str]:
             continue
         (always if meta.get("always_candidate") else others).append(name)
 
-    candidate = meeting_context.best_candidate(context) if context is not None else None
-    attendees = event_attendee_names(candidate.event) if candidate else []
+    attendees = context_attendees(context)
     if not attendees:
         return always
 
@@ -880,46 +714,38 @@ def speaker_allowlist(context) -> list[str]:
     return allowed
 
 
-def match_speakers(
-    embeddings: dict, allowed_speakers: Iterable[str] | None = None
-) -> dict[str, str]:
+def match_speakers(embeddings: dict, allowed_speakers: Iterable[str]) -> dict[str, str]:
     """Match diarization speaker embeddings against enrolled speakers.
     Returns a map of SPEAKER_XX -> enrolled name.
     Rejects ambiguous matches where two enrolled speakers are close.
 
     ``allowed_speakers`` limits the candidates (see ``speaker_allowlist``);
-    ``None`` means every ready speaker, an empty list means nobody."""
+    an empty list means nobody. There is deliberately no "everyone": an
+    unknown voice would land on whichever enrolled centroid is nearest."""
     import numpy as np
 
-    allowed = None if allowed_speakers is None else set(allowed_speakers)
+    from .speakers import cosine_similarities
+
+    allowed = set(allowed_speakers)
 
     # Load centroids for ready speakers
     enrolled = {}
     for d, meta in _ready_speaker_metas():
         name = meta.get("display_name", d.name)
-        if allowed is not None and name not in allowed:
+        if name not in allowed:
             continue
         enrolled[name] = np.load(d / "centroid.npy")
 
     if not enrolled:
         return {}
 
+    names = list(enrolled)
+    centroids = np.stack([enrolled[name] for name in names])
     name_map = {}
     for spk_label, spk_emb in embeddings.items():
-        spk_vec = np.array(spk_emb)
-
-        # Compute similarity to all enrolled speakers
-        sims = {}
-        for name, centroid in enrolled.items():
-            sim = np.dot(spk_vec, centroid) / (
-                np.linalg.norm(spk_vec) * np.linalg.norm(centroid) + 1e-8
-            )
-            sims[name] = float(sim)
-
-        if not sims:
-            continue
-
-        ranked = sorted(sims.items(), key=lambda x: x[1], reverse=True)
+        # Similarity to all enrolled speakers
+        sims = cosine_similarities(centroids, np.asarray(spk_emb))
+        ranked = sorted(zip(names, sims.tolist()), key=lambda x: x[1], reverse=True)
         best_name, best_sim = ranked[0]
 
         # Must exceed threshold
@@ -975,7 +801,7 @@ def _dedup_echo(mic_entries: list[dict], sys_entries: list[dict]) -> list[dict]:
     return kept
 
 
-def merge_channels(mic_result: dict, sys_result: dict | None, ts: str) -> list[dict]:
+def merge_channels(mic_result: dict, sys_result: dict | None) -> list[dict]:
     """Merge mic and sys transcripts into a single timeline, removing echo duplicates."""
     mic_entries = []
     for seg in mic_result.get("segments", []):
@@ -1035,18 +861,6 @@ def _fmt_time(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
-def _describe_parts(paths: list[Path]) -> str:
-    if not paths:
-        return "0 parts"
-    if len(paths) == 1:
-        return paths[0].name
-    return f"{len(paths)} parts ({paths[0].name} .. {paths[-1].name})"
-
-
-def _audio_duration(path: Path | None) -> float:
-    return audio_duration(path)
-
-
 def _offset_entries(entries: list[dict], offset_seconds: float) -> list[dict]:
     if not offset_seconds:
         return entries
@@ -1089,12 +903,9 @@ def process_part(
     part_index: int,
     use_part_suffix: bool,
     language: str,
+    allowed_speakers: Iterable[str],
     do_diarize: bool = True,
-    diarizer_name: str = DEFAULT_DIARIZER,
-    allowed_speakers: Iterable[str] | None = None,
 ) -> list[dict]:
-    _activate_cuda_library_path()
-
     import torch
     import whisperx
     # WhisperX imports its ASR module on first use, and through pyannote that
@@ -1106,8 +917,18 @@ def process_part(
     # no model.
     import whisperx.asr  # noqa: F401
 
+    from .speakers import load_embedding_model
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Only speaker naming needs it (pyannote's embedding model); Sortformer does not.
     hf_token = get_hf_token() if do_diarize else None
+    # Without a token the naming stage used to be skipped silently, leaving every
+    # enrolled speaker anonymous in the transcript. Fail before the expensive part.
+    if do_diarize and not hf_token and _ready_speaker_metas():
+        raise RuntimeError(
+            f"Enrolled speakers in {SPEAKERS_DIR} need a HuggingFace token to be named, "
+            "and none was found: log in with `huggingface-cli login`, or pass --no-diarize."
+        )
     model_name = whisper_model_for(language)
     tracks = {"mic": (mic_part, None)}
     if sys_part:
@@ -1164,32 +985,28 @@ def process_part(
         )
         if do_diarize:
             results = _run_model_stage(
-                f"diarization:{diarizer_name}", _with_results(results), device,
-                lambda dev: load_diarizer(diarizer_name, dev, hf_token),
-                lambda path, previous, model, dev: diarize(
-                    path, previous, dev, diarizer_name, model, hf_token,
-                    allowed_speakers=allowed_speakers,
-                ),
-                skip_load_errors=True, skip_empty=True,
+                "diarization:sortformer", _with_results(results), device,
+                load_diarizer,
+                lambda path, previous, model, dev: diarize(path, previous, dev, model),
+                skip_empty=True,
             )
 
-        if do_diarize and diarizer_name == "sortformer" and hf_token and SPEAKERS_DIR.exists():
+        if do_diarize and hf_token and SPEAKERS_DIR.exists():
             results = _run_model_stage(
                 "speaker-naming", _with_results(results), device,
-                lambda dev: load_pyannote_embedding_model(hf_token, dev),
+                lambda dev: load_embedding_model(hf_token, dev),
                 lambda path, previous, model, dev: apply_enrolled_speaker_names(
                     path, previous, model, dev, allowed_speakers,
                 ),
             )
 
-        part_entries = merge_channels(results["mic"], results.get("sys"), mic_part.stem)
+        part_entries = merge_channels(results["mic"], results.get("sys"))
         return _relabel_anonymous_entries(
             part_entries, part_index=part_index, use_part_suffix=use_part_suffix,
         )
     finally:
-        if diarizer_name == "sortformer":
-            _cleanup_pcm_wav(mic_part)
-            _cleanup_pcm_wav(sys_part)
+        _cleanup_pcm_wav(mic_part)
+        _cleanup_pcm_wav(sys_part)
         # The cancelled mic is itself in the WAV cache, under its own stem.
         _cleanup_pcm_wav(aec_path)
 
@@ -1206,9 +1023,6 @@ def ensure_speaker_cache() -> None:
     from . import speakers
 
     status, reason = speakers.cache_status(SPEAKERS_DIR, load_config().enrollments_dir)
-    if status == "legacy":
-        print(f"  Note: {reason}; using them as they are until they are migrated")
-        return
     if status == "stale":
         print(f"  Speaker cache out of date ({reason}); updating", flush=True)
         subprocess.run(
@@ -1217,7 +1031,7 @@ def ensure_speaker_cache() -> None:
         )
 
 
-def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str = DEFAULT_DIARIZER):
+def process_session(session_id: str, do_diarize: bool = True):
     """Process a single recording session, possibly spanning multiple rotated parts."""
     from . import context as meeting_context
 
@@ -1240,6 +1054,14 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
             f"No context for {session_id} — run hugin-meet-context {session_id} first"
         )
     language = context.language_value
+
+    out_json = transcript_json_path(session_id)
+    out_md = transcript_md_path(session_id)
+
+    if out_json.exists():
+        print(f"  Already processed: {out_json.name}")
+        return
+
     if do_diarize:
         ensure_speaker_cache()
     allowed_speakers = speaker_allowlist(context)
@@ -1247,15 +1069,6 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
         "  Speaker candidates from calendar: "
         + (", ".join(allowed_speakers) if allowed_speakers else "(none)")
     )
-
-    from .pipeline import year_subdir
-
-    out_json = transcript_json_path(session_id)
-    out_md = TRANSCRIPT_DIR / year_subdir(session_id) / f"transcript-{session_id}.md"
-
-    if out_json.exists():
-        print(f"  Already processed: {out_json.name}")
-        return
 
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1291,8 +1104,6 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
                 str(mic_info.part),
                 "--json-out",
                 str(tmp_path),
-                "--diarizer",
-                diarizer_name,
                 "--language",
                 language,
                 "--allowed-speakers",
@@ -1309,7 +1120,7 @@ def process_session(session_id: str, do_diarize: bool = True, diarizer_name: str
             part_entries = json.loads(tmp_path.read_text())
             part_entries = _offset_entries(part_entries, session_offset)
             session_entries.extend(part_entries)
-            session_offset += max(_audio_duration(mic_part), _audio_duration(sys_part))
+            session_offset += max(audio_duration(mic_part), audio_duration(sys_part))
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -1330,7 +1141,6 @@ def find_unprocessed() -> list[str]:
     processed = {
         p.stem.removeprefix("transcript-")
         for p in json_dir.rglob("transcript-*.json")
-        if not p.name.endswith(".customer.json")
     }
     sessions = scan_raw_audio_sessions()
     in_progress = scan_in_progress_parts()
@@ -1348,12 +1158,6 @@ def main():
     parser.add_argument("file", nargs="?", help="Session id or raw opus file from the session")
     parser.add_argument("--all", action="store_true", help="Process all unprocessed sessions")
     parser.add_argument("--no-diarize", action="store_true", help="Skip diarization")
-    parser.add_argument(
-        "--diarizer",
-        choices=DIARIZERS,
-        default=DEFAULT_DIARIZER,
-        help=f"Diarization backend (default: {DEFAULT_DIARIZER})",
-    )
     args = parser.parse_args()
 
     if args.all:
@@ -1364,11 +1168,7 @@ def main():
         print(f"Found {len(unprocessed)} unprocessed recording session(s)")
         for session_id in unprocessed:
             print(f"\nProcessing: {session_id}")
-            process_session(
-                session_id,
-                do_diarize=not args.no_diarize,
-                diarizer_name=args.diarizer,
-            )
+            process_session(session_id, do_diarize=not args.no_diarize)
     elif args.file:
         input_path = Path(args.file)
         resolved_path = None
@@ -1384,11 +1184,7 @@ def main():
             print(f"Could not determine recording session from: {args.file}", file=sys.stderr)
             sys.exit(1)
         print(f"Processing: {session_id}")
-        process_session(
-            session_id,
-            do_diarize=not args.no_diarize,
-            diarizer_name=args.diarizer,
-        )
+        process_session(session_id, do_diarize=not args.no_diarize)
     else:
         parser.print_help()
 
