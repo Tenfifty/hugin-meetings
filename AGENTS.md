@@ -13,6 +13,13 @@ convention) lives in the separate hugin package in `hugin/CONVENTIONS.md`.
 Read that before touching `config.py` or anything that crosses tool
 boundaries.
 
+On the author's machine `~/.config/hugin/` is managed by chezmoi
+(source in `~/projs/dotfiles`). When a change here adds, renames or
+drops a config key, update the live `meetings.yaml` with `chezmoi edit`,
+or edit it directly and run `chezmoi re-add ~/.config/hugin/meetings.yaml`,
+then commit the dotfiles repo. A key changed only in the live file
+drifts from the source, and the next `chezmoi apply` brings it back.
+
 ## Install / dev setup
 
 ```
